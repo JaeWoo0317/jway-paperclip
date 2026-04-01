@@ -85,6 +85,26 @@
     .move-btn{font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;color:var(--text-secondary);transition:all var(--transition)}
     .move-btn:hover{background:var(--accent-light);color:var(--accent);border-color:var(--accent)}
     .move-btn.current{background:var(--accent);color:white;border-color:var(--accent)}
+    /* Heartbeat */
+    .hb-status{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:16px;font-size:12px;font-weight:500}
+    .hb-active{background:var(--success-light);color:var(--success)}
+    .hb-stopped{background:var(--bg-secondary);color:var(--text-tertiary)}
+    .pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--success);animation:pulse-anim 1.5s infinite}
+    @keyframes pulse-anim{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
+    .run-log{max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);padding:12px;white-space:pre-wrap;line-height:1.6}
+    .run-card{background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px}
+    .run-card-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .cost-pill{font-size:11px;padding:2px 6px;border-radius:4px;background:var(--warning-light);color:var(--warning);font-weight:500}
+    .token-pill{font-size:11px;padding:2px 6px;border-radius:4px;background:var(--info-light);color:var(--info);font-weight:500}
+    /* Cost Dashboard */
+    .progress-bar{width:100%;height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden}
+    .progress-fill{height:100%;border-radius:4px;transition:width .3s ease}
+    .daily-chart{display:flex;align-items:flex-end;gap:4px;height:120px;padding:8px 0}
+    .daily-bar{flex:1;min-width:0;border-radius:3px 3px 0 0;background:var(--accent);transition:height .3s ease;position:relative;cursor:default}
+    .daily-bar:hover{opacity:.8}
+    .daily-label{font-size:10px;color:var(--text-tertiary);text-align:center;margin-top:4px}
+    .model-bar{display:flex;height:24px;border-radius:4px;overflow:hidden;gap:1px}
+    .model-segment{height:100%;transition:width .3s ease;min-width:2px}
   </style>
 </head>
 <body>
@@ -94,7 +114,7 @@
 const { useState, useEffect } = React;
 
 const STORAGE_KEY = "jway-paperclip";
-const VER = "0.2.0";
+const VER = "0.3.0";
 const MODELS = {
   "claude-opus-4-6":           { name: "Opus 4.6",   inputPer1M: 500, outputPer1M: 2500 },
   "claude-sonnet-4-6":         { name: "Sonnet 4.6", inputPer1M: 300, outputPer1M: 1500 },
@@ -106,6 +126,184 @@ function save(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
 function init() { return { version: VER, settings: { apiKey: "", companyName: "JWAY Digital" }, companies: [], agents: [], issues: [], projects: [], goals: [], costEvents: [], budgetPolicies: [], heartbeatRuns: [], routines: [], approvals: [], activityLog: [], plugins: [] }; }
 function uid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
+
+// ========== Claude API Service ==========
+async function callClaudeAPI(apiKey, model, systemPrompt, userMessage, maxTokens) {
+  maxTokens = maxTokens || 2048;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: model,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMessage }],
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error("API Error " + res.status + ": " + err);
+  }
+  return await res.json();
+}
+
+function calcCostCents(model, usage) {
+  const p = MODELS[model];
+  if (!p || !usage) return 0;
+  const inp = ((usage.input_tokens || 0) / 1000000) * p.inputPer1M;
+  const cached = ((usage.cache_read_input_tokens || 0) / 1000000) * p.inputPer1M * 0.1;
+  const out = ((usage.output_tokens || 0) / 1000000) * p.outputPer1M;
+  return Math.round(inp + cached + out);
+}
+
+// ========== Heartbeat Engine ==========
+function buildAgentPrompt(agent, issues, data) {
+  const assignedIssues = issues.filter(function(i) {
+    return i.assigneeAgentId === agent.id && i.status !== "done" && i.status !== "cancelled";
+  });
+  const company = data.companies[0];
+  var prompt = "당신은 " + (company ? company.name : "JWAY Digital") + "의 " + agent.name + " (" + (agent.title || agent.role) + ") 입니다.\n\n";
+  prompt += "## 역할 및 역량\n" + (agent.capabilities || "일반 업무") + "\n\n";
+
+  if (assignedIssues.length > 0) {
+    prompt += "## 할당된 이슈 목록\n";
+    assignedIssues.forEach(function(issue) {
+      prompt += "- [" + issue.identifier + "] " + issue.title + " (상태: " + issue.status + ", 우선순위: " + issue.priority + ")\n";
+      if (issue.description) prompt += "  설명: " + issue.description + "\n";
+    });
+  } else {
+    prompt += "## 현재 할당된 이슈가 없습니다.\n";
+  }
+
+  prompt += "\n## 지시사항\n";
+  prompt += "할당된 이슈를 검토하고, 각 이슈에 대해 다음 JSON 형식으로 응답해주세요:\n";
+  prompt += '```json\n{\n  "actions": [\n    {\n      "issueId": "이슈ID",\n      "action": "start|complete|comment",\n      "comment": "작업 내용이나 결과 설명"\n    }\n  ],\n  "summary": "전체 업무 요약"\n}\n```\n';
+  prompt += "- action이 'start'면 이슈를 '진행 중'으로 변경\n";
+  prompt += "- action이 'complete'면 이슈를 '완료'로 변경\n";
+  prompt += "- action이 'comment'면 코멘트만 추가\n";
+  prompt += "- 할당된 이슈가 없으면 summary만 작성\n";
+
+  return prompt;
+}
+
+function parseAgentResponse(text) {
+  try {
+    var jsonMatch = text.match(/```json\s*([\s\S]*?)```/);
+    if (jsonMatch) return JSON.parse(jsonMatch[1]);
+    var braceMatch = text.match(/\{[\s\S]*"actions"[\s\S]*\}/);
+    if (braceMatch) return JSON.parse(braceMatch[0]);
+    return { actions: [], summary: text.substring(0, 200) };
+  } catch (e) {
+    return { actions: [], summary: text.substring(0, 200) };
+  }
+}
+
+async function executeHeartbeat(agent, data, onUpdate) {
+  var company = data.companies[0];
+  if (!company || !data.settings.apiKey) return null;
+
+  // Budget check
+  if (agent.budgetMonthlyCents > 0 && agent.spentMonthlyCents >= agent.budgetMonthlyCents) {
+    return { error: "budget_exceeded", agent: agent.name };
+  }
+
+  var model = (agent.adapterConfig && agent.adapterConfig.model) || "claude-sonnet-4-6";
+  var systemPrompt = (agent.adapterConfig && agent.adapterConfig.systemPrompt) || "";
+  if (!systemPrompt) {
+    systemPrompt = "당신은 AI 에이전트 회사의 " + (agent.title || agent.role) + "입니다. 주어진 업무를 성실히 수행하세요. 한국어로 응답하세요.";
+  }
+
+  var userMessage = buildAgentPrompt(agent, data.issues, data);
+  var runId = uid();
+  var startTime = now();
+
+  try {
+    // Update agent status to working
+    var updatedAgents = data.agents.map(function(a) {
+      return a.id === agent.id ? { ...a, status: "working", lastHeartbeatAt: startTime, updatedAt: startTime } : a;
+    });
+    var tempData = { ...data, agents: updatedAgents };
+    onUpdate(tempData);
+
+    var response = await callClaudeAPI(data.settings.apiKey, model, systemPrompt, userMessage, (agent.adapterConfig && agent.adapterConfig.maxTokens) || 2048);
+
+    var responseText = response.content.map(function(c) { return c.text || ""; }).join("\n");
+    var usage = response.usage || {};
+    var costCents = calcCostCents(model, usage);
+    var parsed = parseAgentResponse(responseText);
+
+    // Apply actions to issues
+    var updatedIssues = [...tempData.issues];
+    var logs = [];
+    if (parsed.actions && parsed.actions.length > 0) {
+      parsed.actions.forEach(function(act) {
+        updatedIssues = updatedIssues.map(function(issue) {
+          if (issue.id === act.issueId || issue.identifier === act.issueId) {
+            var changes = { updatedAt: now() };
+            if (act.action === "start") { changes.status = "in_progress"; changes.startedAt = now(); }
+            else if (act.action === "complete") { changes.status = "done"; changes.completedAt = now(); }
+            logs.push({ id: uid(), emoji: act.action === "complete" ? "✅" : "🔄", message: agent.icon + " " + agent.name + ": " + (issue.identifier || "") + " → " + (act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : "코멘트") + (act.comment ? " — " + act.comment.substring(0, 80) : ""), createdAt: now() });
+            return { ...issue, ...changes };
+          }
+          return issue;
+        });
+      });
+    }
+
+    // Record cost event
+    var costEvent = {
+      id: uid(), companyId: company.id, agentId: agent.id, provider: "anthropic",
+      model: model, inputTokens: usage.input_tokens || 0,
+      cachedInputTokens: usage.cache_read_input_tokens || 0,
+      outputTokens: usage.output_tokens || 0, costCents: costCents, occurredAt: now(), createdAt: now(),
+    };
+
+    // Record heartbeat run
+    var hbRun = {
+      id: runId, companyId: company.id, agentId: agent.id, model: model,
+      status: "completed", inputTokens: usage.input_tokens || 0,
+      outputTokens: usage.output_tokens || 0, costCents: costCents,
+      summary: parsed.summary || "", responseExcerpt: responseText.substring(0, 500),
+      startedAt: startTime, completedAt: now(),
+    };
+
+    // Update agent spent + status back to idle
+    var finalAgents = tempData.agents.map(function(a) {
+      if (a.id === agent.id) {
+        return { ...a, status: "idle", spentMonthlyCents: a.spentMonthlyCents + costCents, lastHeartbeatAt: now(), updatedAt: now() };
+      }
+      return a;
+    });
+
+    logs.push({ id: uid(), emoji: "💓", message: agent.icon + " " + agent.name + " heartbeat 완료 — " + (usage.input_tokens || 0) + "+" + (usage.output_tokens || 0) + " tokens, $" + (costCents / 100).toFixed(2), createdAt: now() });
+
+    var finalData = {
+      ...tempData,
+      agents: finalAgents,
+      issues: updatedIssues,
+      costEvents: [...tempData.costEvents, costEvent],
+      heartbeatRuns: [...tempData.heartbeatRuns, hbRun],
+      activityLog: [...tempData.activityLog, ...logs],
+    };
+    onUpdate(finalData);
+    return { success: true, run: hbRun, costCents: costCents };
+
+  } catch (err) {
+    // Set agent to error
+    var errAgents = data.agents.map(function(a) {
+      return a.id === agent.id ? { ...a, status: "error", updatedAt: now() } : a;
+    });
+    var errLog = { id: uid(), emoji: "❌", message: agent.icon + " " + agent.name + " heartbeat 실패: " + err.message.substring(0, 100), createdAt: now() };
+    var errRun = { id: runId, companyId: company.id, agentId: agent.id, model: model, status: "error", error: err.message, startedAt: startTime, completedAt: now(), costCents: 0 };
+    onUpdate({ ...data, agents: errAgents, heartbeatRuns: [...data.heartbeatRuns, errRun], activityLog: [...data.activityLog, errLog] });
+    return { success: false, error: err.message };
+  }
+}
 
 function SetupScreen({ data, onUpdate }) {
   const [apiKey, setApiKey] = useState("");
@@ -169,7 +367,7 @@ function SidebarNav({ data, activePage, onNav }) {
         ))}
       </div>
       <div style={{flex:1}}/>
-      <div style={{padding:12,borderTop:"1px solid var(--border)",fontSize:12,color:"var(--text-tertiary)"}}>v{VER} · Phase 1</div>
+      <div style={{padding:12,borderTop:"1px solid var(--border)",fontSize:12,color:"var(--text-tertiary)"}}>v{VER} · Phase 3</div>
     </div>
   );
 }
@@ -459,6 +657,365 @@ function IssuesPage({ data, onUpdate }) {
   );
 }
 
+function HeartbeatPage({ data, onUpdate }) {
+  const [running, setRunning] = useState(null);
+  const [lastResult, setLastResult] = useState(null);
+  const [autoMode, setAutoMode] = useState(false);
+  const autoRef = React.useRef(null);
+
+  const activeAgents = data.agents.filter(function(a) { return a.status !== "paused"; });
+  const recentRuns = (data.heartbeatRuns || []).slice(-20).reverse();
+
+  const runAgent = async (agent) => {
+    setRunning(agent.id);
+    setLastResult(null);
+    var result = await executeHeartbeat(agent, data, onUpdate);
+    setLastResult(result);
+    setRunning(null);
+  };
+
+  const runAll = async () => {
+    for (var i = 0; i < activeAgents.length; i++) {
+      setRunning(activeAgents[i].id);
+      var result = await executeHeartbeat(activeAgents[i], data, onUpdate);
+      setLastResult(result);
+    }
+    setRunning(null);
+  };
+
+  const toggleAuto = () => {
+    if (autoMode) {
+      if (autoRef.current) clearInterval(autoRef.current);
+      autoRef.current = null;
+      setAutoMode(false);
+    } else {
+      setAutoMode(true);
+      autoRef.current = setInterval(async function() {
+        var freshData = load();
+        if (!freshData) return;
+        var agents = freshData.agents.filter(function(a) { return a.status !== "paused" && a.status !== "working"; });
+        for (var i = 0; i < agents.length; i++) {
+          await executeHeartbeat(agents[i], freshData, function(d) { save(d); onUpdate(d); });
+          freshData = load();
+        }
+      }, 5 * 60 * 1000);
+    }
+  };
+
+  useEffect(function() { return function() { if (autoRef.current) clearInterval(autoRef.current); }; }, []);
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div className="font-bold" style={{fontSize:18}}>💓 Heartbeat 엔진</div>
+          <span className={"hb-status " + (autoMode ? "hb-active" : "hb-stopped")}>
+            {autoMode && <span className="pulse"/>}
+            {autoMode ? "자동 실행 중 (5분 간격)" : "수동 모드"}
+          </span>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn" onClick={toggleAuto}>
+            {autoMode ? "⏸ 자동 중지" : "▶️ 자동 시작"}
+          </button>
+          <button className="btn btn-primary" onClick={runAll} disabled={running}>
+            {running ? "⏳ 실행 중..." : "🔄 전체 Heartbeat"}
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:12}}>에이전트별 수동 실행</div>
+        {activeAgents.length === 0
+          ? <div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>활성 에이전트가 없습니다</div>
+          : activeAgents.map(function(agent) {
+            var mi = MODELS[agent.adapterConfig ? agent.adapterConfig.model : ""] || { name: "?" };
+            var isRunning = running === agent.id;
+            var budgetPct = agent.budgetMonthlyCents > 0 ? Math.round(agent.spentMonthlyCents / agent.budgetMonthlyCents * 100) : 0;
+            var overBudget = agent.budgetMonthlyCents > 0 && agent.spentMonthlyCents >= agent.budgetMonthlyCents;
+            return (
+              <div key={agent.id} className="table-row">
+                <span style={{fontSize:20}}>{agent.icon || "🤖"}</span>
+                <div style={{flex:1}}>
+                  <div className="font-medium">{agent.name}</div>
+                  <div className="text-sm text-muted">{mi.name} · {agent.title || agent.role}</div>
+                </div>
+                <span className={"badge badge-" + agent.status}>{isRunning ? "실행 중..." : agent.status}</span>
+                <span className="text-sm text-muted">{"$" + (agent.spentMonthlyCents / 100).toFixed(2) + " / $" + (agent.budgetMonthlyCents / 100).toFixed(0)}</span>
+                {overBudget
+                  ? <span className="badge badge-error">예산 초과</span>
+                  : <button className="btn" style={{padding:"4px 12px",fontSize:12}} onClick={function(){runAgent(agent)}} disabled={isRunning || agent.status === "working"}>
+                      {isRunning ? "⏳" : "▶️ 실행"}
+                    </button>
+                }
+              </div>
+            );
+          })
+        }
+      </div>
+
+      {lastResult && (
+        <div className="card">
+          <div className="font-medium" style={{marginBottom:8}}>마지막 실행 결과</div>
+          {lastResult.success
+            ? <div>
+                <div style={{display:"flex",gap:8,marginBottom:8}}>
+                  <span className="badge badge-done">성공</span>
+                  <span className="cost-pill">{"$" + (lastResult.costCents / 100).toFixed(3)}</span>
+                  {lastResult.run && <span className="token-pill">{(lastResult.run.inputTokens||0) + "+" + (lastResult.run.outputTokens||0) + " tokens"}</span>}
+                </div>
+                {lastResult.run && lastResult.run.responseExcerpt && (
+                  <div className="run-log">{lastResult.run.responseExcerpt}</div>
+                )}
+              </div>
+            : <div>
+                <span className="badge badge-error">실패</span>
+                <div className="text-sm" style={{marginTop:8,color:"var(--danger)"}}>{lastResult.error}</div>
+              </div>
+          }
+        </div>
+      )}
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:12}}>실행 기록 (최근 20건)</div>
+        {recentRuns.length === 0
+          ? <div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>아직 실행 기록이 없습니다</div>
+          : recentRuns.map(function(run) {
+            var agent = data.agents.find(function(a) { return a.id === run.agentId; });
+            return (
+              <div key={run.id} className="run-card">
+                <div className="run-card-header">
+                  <span>{agent ? agent.icon : "🤖"}</span>
+                  <span className="text-sm font-medium">{agent ? agent.name : "?"}</span>
+                  <span className={"badge badge-" + (run.status === "completed" ? "done" : "error")}>{run.status}</span>
+                  {run.costCents > 0 && <span className="cost-pill">{"$" + (run.costCents / 100).toFixed(3)}</span>}
+                  {run.inputTokens > 0 && <span className="token-pill">{run.inputTokens + "+" + (run.outputTokens || 0)}</span>}
+                  <span className="text-sm text-muted" style={{marginLeft:"auto"}}>{new Date(run.startedAt).toLocaleString("ko-KR")}</span>
+                </div>
+                {run.summary && <div className="text-sm">{run.summary}</div>}
+                {run.error && <div className="text-sm" style={{color:"var(--danger)"}}>{run.error}</div>}
+              </div>
+            );
+          })
+        }
+      </div>
+    </div>
+  );
+}
+
+function ActivityPage({ data }) {
+  const logs = (data.activityLog || []).slice(-50).reverse();
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div className="font-bold" style={{fontSize:18}}>📜 활동 로그 ({data.activityLog.length}건)</div>
+      <div className="card" style={{padding:0,overflow:"hidden"}}>
+        {logs.length === 0
+          ? <div className="text-sm text-muted" style={{padding:40,textAlign:"center"}}>아직 활동이 없습니다</div>
+          : logs.map(function(l) {
+            return (
+              <div key={l.id} className="table-row">
+                <span style={{fontSize:16}}>{l.emoji || "📌"}</span>
+                <span className="text-sm" style={{flex:1}}>{l.message}</span>
+                <span className="text-sm text-muted" style={{whiteSpace:"nowrap"}}>{new Date(l.createdAt).toLocaleString("ko-KR")}</span>
+              </div>
+            );
+          })
+        }
+      </div>
+    </div>
+  );
+}
+
+function CostsPage({ data }) {
+  const co = data.companies[0];
+  const n = new Date();
+  const monthEvents = data.costEvents.filter(function(e) {
+    var d = new Date(e.occurredAt);
+    return d.getUTCFullYear() === n.getUTCFullYear() && d.getUTCMonth() === n.getUTCMonth();
+  });
+  const totalCostCents = monthEvents.reduce(function(s, e) { return s + (e.costCents || 0); }, 0);
+  const totalCalls = monthEvents.length;
+  const totalInputTokens = monthEvents.reduce(function(s, e) { return s + (e.inputTokens || 0); }, 0);
+  const totalOutputTokens = monthEvents.reduce(function(s, e) { return s + (e.outputTokens || 0); }, 0);
+  const avgCost = totalCalls > 0 ? totalCostCents / totalCalls : 0;
+  const budgetCents = co ? co.budgetMonthlyCents : 0;
+  const budgetPct = budgetCents > 0 ? Math.min(100, Math.round(totalCostCents / budgetCents * 100)) : 0;
+
+  // Agent cost breakdown
+  const agentCosts = data.agents.map(function(agent) {
+    var agentEvents = monthEvents.filter(function(e) { return e.agentId === agent.id; });
+    var cost = agentEvents.reduce(function(s, e) { return s + (e.costCents || 0); }, 0);
+    var calls = agentEvents.length;
+    var tokens = agentEvents.reduce(function(s, e) { return s + (e.inputTokens || 0) + (e.outputTokens || 0); }, 0);
+    var pct = agent.budgetMonthlyCents > 0 ? Math.min(100, Math.round(agent.spentMonthlyCents / agent.budgetMonthlyCents * 100)) : 0;
+    var over = agent.budgetMonthlyCents > 0 && agent.spentMonthlyCents >= agent.budgetMonthlyCents;
+    return { agent: agent, cost: cost, calls: calls, tokens: tokens, pct: pct, over: over };
+  });
+
+  // Model breakdown
+  var modelMap = {};
+  monthEvents.forEach(function(e) {
+    if (!modelMap[e.model]) modelMap[e.model] = { calls: 0, cost: 0, inputTokens: 0, outputTokens: 0 };
+    modelMap[e.model].calls++;
+    modelMap[e.model].cost += (e.costCents || 0);
+    modelMap[e.model].inputTokens += (e.inputTokens || 0);
+    modelMap[e.model].outputTokens += (e.outputTokens || 0);
+  });
+  var modelColors = { "claude-opus-4-6": "#8b5cf6", "claude-sonnet-4-6": "#6366f1", "claude-haiku-4-5-20251001": "#06b6d4" };
+  var modelEntries = Object.keys(modelMap).map(function(k) {
+    return { model: k, name: (MODELS[k] || {}).name || k, color: modelColors[k] || "#94a3b8", ...modelMap[k] };
+  }).sort(function(a, b) { return b.cost - a.cost; });
+
+  // Daily chart (last 14 days)
+  var dailyData = [];
+  for (var i = 13; i >= 0; i--) {
+    var day = new Date(n);
+    day.setDate(day.getDate() - i);
+    var dayStr = day.toISOString().slice(0, 10);
+    var dayCost = data.costEvents.filter(function(e) {
+      return e.occurredAt && e.occurredAt.slice(0, 10) === dayStr;
+    }).reduce(function(s, e) { return s + (e.costCents || 0); }, 0);
+    dailyData.push({ label: (day.getMonth() + 1) + "/" + day.getDate(), cost: dayCost });
+  }
+  var maxDailyCost = Math.max.apply(null, dailyData.map(function(d) { return d.cost; })) || 1;
+
+  // Recent events
+  var recentEvents = data.costEvents.slice(-30).reverse();
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      {/* Summary Cards */}
+      <div className="card-grid">
+        <div className="card metric-card">
+          <div className="metric-label">이번 달 비용</div>
+          <div className="metric-value">{"$" + (totalCostCents / 100).toFixed(2)}</div>
+          <div className="metric-sub">{"예산 $" + (budgetCents / 100).toFixed(0) + " (" + budgetPct + "%)"}</div>
+          <div className="progress-bar" style={{marginTop:8}}>
+            <div className="progress-fill" style={{width:budgetPct+"%",background:budgetPct>=90?"var(--danger)":budgetPct>=70?"var(--warning)":"var(--success)"}}/>
+          </div>
+        </div>
+        <div className="card metric-card">
+          <div className="metric-label">API 호출 수</div>
+          <div className="metric-value">{totalCalls}</div>
+          <div className="metric-sub">이번 달</div>
+        </div>
+        <div className="card metric-card">
+          <div className="metric-label">총 토큰</div>
+          <div className="metric-value">{((totalInputTokens + totalOutputTokens) / 1000).toFixed(1) + "K"}</div>
+          <div className="metric-sub">{"입력 " + (totalInputTokens/1000).toFixed(1) + "K · 출력 " + (totalOutputTokens/1000).toFixed(1) + "K"}</div>
+        </div>
+        <div className="card metric-card">
+          <div className="metric-label">평균 호출 비용</div>
+          <div className="metric-value">{"$" + (avgCost / 100).toFixed(3)}</div>
+          <div className="metric-sub">호출당</div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:20,flexWrap:"wrap"}}>
+        {/* Agent Cost Table */}
+        <div className="card" style={{flex:"1 1 400px"}}>
+          <div className="font-medium" style={{marginBottom:12}}>에이전트별 비용</div>
+          {agentCosts.length === 0
+            ? <div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>에이전트가 없습니다</div>
+            : agentCosts.map(function(ac) {
+              var mi = MODELS[ac.agent.adapterConfig ? ac.agent.adapterConfig.model : ""] || { name: "?" };
+              return (
+                <div key={ac.agent.id} className="table-row" style={{flexWrap:"wrap"}}>
+                  <span style={{fontSize:20}}>{ac.agent.icon || "🤖"}</span>
+                  <div style={{flex:"1 1 120px",minWidth:0}}>
+                    <div className="text-sm font-medium">{ac.agent.name}</div>
+                    <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{mi.name} · {ac.calls}회</div>
+                  </div>
+                  <div style={{flex:"1 1 160px",minWidth:120}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                      <span className="text-sm font-medium">{"$" + (ac.agent.spentMonthlyCents / 100).toFixed(2)}</span>
+                      <span className="text-sm text-muted">{"/ $" + (ac.agent.budgetMonthlyCents / 100).toFixed(0)}</span>
+                    </div>
+                    <div className="progress-bar">
+                      <div className="progress-fill" style={{width:ac.pct+"%",background:ac.over?"var(--danger)":ac.pct>=70?"var(--warning)":"var(--accent)"}}/>
+                    </div>
+                  </div>
+                  {ac.over && <span className="badge badge-error" style={{fontSize:11}}>초과</span>}
+                </div>
+              );
+            })
+          }
+        </div>
+
+        {/* Model Breakdown */}
+        <div className="card" style={{flex:"1 1 300px"}}>
+          <div className="font-medium" style={{marginBottom:12}}>모델별 비용</div>
+          {totalCostCents > 0 && (
+            <div className="model-bar" style={{marginBottom:16}}>
+              {modelEntries.map(function(m) {
+                var widthPct = Math.max(2, Math.round(m.cost / totalCostCents * 100));
+                return <div key={m.model} className="model-segment" title={m.name + ": $" + (m.cost / 100).toFixed(2)} style={{width:widthPct+"%",background:m.color}}/>;
+              })}
+            </div>
+          )}
+          {modelEntries.length === 0
+            ? <div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>데이터가 없습니다</div>
+            : modelEntries.map(function(m) {
+              return (
+                <div key={m.model} className="table-row">
+                  <span style={{width:10,height:10,borderRadius:"50%",background:m.color,flexShrink:0}}/>
+                  <div style={{flex:1}}>
+                    <div className="text-sm font-medium">{m.name}</div>
+                    <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{m.calls + "회 · " + ((m.inputTokens + m.outputTokens) / 1000).toFixed(1) + "K tokens"}</div>
+                  </div>
+                  <span className="text-sm font-medium">{"$" + (m.cost / 100).toFixed(2)}</span>
+                  <span className="text-sm text-muted">{totalCostCents > 0 ? Math.round(m.cost / totalCostCents * 100) + "%" : "0%"}</span>
+                </div>
+              );
+            })
+          }
+        </div>
+      </div>
+
+      {/* Daily Cost Chart */}
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:12}}>일별 비용 추이 (최근 14일)</div>
+        <div className="daily-chart">
+          {dailyData.map(function(d, idx) {
+            var heightPct = d.cost > 0 ? Math.max(4, (d.cost / maxDailyCost) * 100) : 0;
+            return (
+              <div key={idx} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%"}}>
+                {d.cost > 0 && <div className="text-sm" style={{fontSize:10,color:"var(--text-tertiary)",marginBottom:4}}>{"$" + (d.cost / 100).toFixed(2)}</div>}
+                <div className="daily-bar" style={{width:"100%",height:heightPct+"%"}} title={d.label + ": $" + (d.cost / 100).toFixed(2)}/>
+                <div className="daily-label">{d.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Recent Cost Events */}
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:12}}>{"최근 비용 이벤트 (" + Math.min(30, data.costEvents.length) + "건)"}</div>
+        {recentEvents.length === 0
+          ? <div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>아직 비용 이벤트가 없습니다. Heartbeat를 실행해보세요!</div>
+          : recentEvents.map(function(ev) {
+            var agent = data.agents.find(function(a) { return a.id === ev.agentId; });
+            var mi = MODELS[ev.model] || { name: ev.model };
+            return (
+              <div key={ev.id} className="table-row">
+                <span style={{fontSize:16}}>{agent ? agent.icon : "🤖"}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="text-sm font-medium">{agent ? agent.name : "알 수 없음"}</div>
+                  <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{mi.name}</div>
+                </div>
+                <span className="token-pill">{(ev.inputTokens || 0) + "+" + (ev.outputTokens || 0)}</span>
+                <span className="cost-pill">{"$" + ((ev.costCents || 0) / 100).toFixed(3)}</span>
+                <span className="text-sm text-muted" style={{whiteSpace:"nowrap"}}>{new Date(ev.occurredAt).toLocaleString("ko-KR")}</span>
+              </div>
+            );
+          })
+        }
+      </div>
+    </div>
+  );
+}
+
 function Placeholder({ emoji, title, desc }) {
   return <div className="card" style={{textAlign:"center",padding:60}}>
     <div style={{fontSize:48,marginBottom:16}}>{emoji}</div>
@@ -484,9 +1041,9 @@ function App() {
     projects: <Placeholder emoji="📁" title="프로젝트" desc="프로젝트 관리"/>,
     goals: <Placeholder emoji="🎯" title="목표 계층" desc="회사 → 팀 → 에이전트"/>,
     approvals: <Placeholder emoji="🛡️" title="승인 대기열" desc="거버넌스"/>,
-    costs: <Placeholder emoji="💰" title="비용 대시보드" desc="모델별 비용 추적"/>,
-    routines: <Placeholder emoji="💓" title="Heartbeat" desc="자동 스케줄링"/>,
-    activity: <Placeholder emoji="📜" title="활동 로그" desc="시간순 활동"/>,
+    costs: <CostsPage data={data}/>,
+    routines: <HeartbeatPage data={data} onUpdate={setData}/>,
+    activity: <ActivityPage data={data}/>,
     settings: <Placeholder emoji="⚙️" title="설정" desc="API 키, 플러그인"/>,
   };
 
