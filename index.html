@@ -114,7 +114,15 @@
 const { useState, useEffect } = React;
 
 const STORAGE_KEY = "jway-paperclip";
+const LOCK_KEY = "jway-paperclip-lock";
+const AUTH_KEY = "jway-paperclip-auth";
 const VER = "0.3.0";
+
+async function hashPassword(pw) {
+  var enc = new TextEncoder().encode(pw);
+  var buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map(function(b) { return b.toString(16).padStart(2, "0"); }).join("");
+}
 const MODELS = {
   "claude-opus-4-6":           { name: "Opus 4.6",   inputPer1M: 500, outputPer1M: 2500 },
   "claude-sonnet-4-6":         { name: "Sonnet 4.6", inputPer1M: 300, outputPer1M: 1500 },
@@ -303,6 +311,76 @@ async function executeHeartbeat(agent, data, onUpdate) {
     onUpdate({ ...data, agents: errAgents, heartbeatRuns: [...data.heartbeatRuns, errRun], activityLog: [...data.activityLog, errLog] });
     return { success: false, error: err.message };
   }
+}
+
+function LockScreen({ onUnlock }) {
+  var hasLock = !!localStorage.getItem(LOCK_KEY);
+  const [mode, setMode] = useState(hasLock ? "login" : "setup");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [error, setError] = useState("");
+
+  const handleSetup = async () => {
+    if (pw.length < 4) { setError("비밀번호는 4자 이상이어야 합니다."); return; }
+    if (pw !== pw2) { setError("비밀번호가 일치하지 않습니다."); return; }
+    var hash = await hashPassword(pw);
+    localStorage.setItem(LOCK_KEY, hash);
+    sessionStorage.setItem(AUTH_KEY, "1");
+    onUnlock();
+  };
+
+  const handleLogin = async () => {
+    if (!pw) { setError("비밀번호를 입력해주세요."); return; }
+    var hash = await hashPassword(pw);
+    var stored = localStorage.getItem(LOCK_KEY);
+    if (hash === stored) {
+      sessionStorage.setItem(AUTH_KEY, "1");
+      setError("");
+      onUnlock();
+    } else {
+      setError("비밀번호가 틀렸습니다.");
+    }
+  };
+
+  const handleKey = (e) => { if (e.key === "Enter") { mode === "setup" ? handleSetup() : handleLogin(); } };
+
+  return (
+    <div className="setup-screen">
+      <div className="setup-card">
+        <div style={{fontSize:48,marginBottom:16}}>🔒</div>
+        <h1 style={{fontSize:24,marginBottom:8}}>JWAY Paperclip</h1>
+        {mode === "setup" ? (
+          <div>
+            <p style={{color:"var(--text-secondary)",marginBottom:24}}>처음 사용하시네요! 비밀번호를 설정해주세요.</p>
+            <div style={{textAlign:"left",display:"flex",flexDirection:"column",gap:12}}>
+              <div>
+                <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>비밀번호</label>
+                <input className="input" type="password" value={pw} onChange={function(e){setPw(e.target.value);setError("")}} onKeyDown={handleKey} placeholder="4자 이상" autoFocus/>
+              </div>
+              <div>
+                <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>비밀번호 확인</label>
+                <input className="input" type="password" value={pw2} onChange={function(e){setPw2(e.target.value);setError("")}} onKeyDown={handleKey} placeholder="다시 입력"/>
+              </div>
+              {error && <div className="text-sm" style={{color:"var(--danger)"}}>{error}</div>}
+              <button className="btn btn-primary" style={{justifyContent:"center",padding:12,width:"100%"}} onClick={handleSetup}>비밀번호 설정 →</button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <p style={{color:"var(--text-secondary)",marginBottom:24}}>비밀번호를 입력해주세요.</p>
+            <div style={{textAlign:"left",display:"flex",flexDirection:"column",gap:12}}>
+              <div>
+                <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>비밀번호</label>
+                <input className="input" type="password" value={pw} onChange={function(e){setPw(e.target.value);setError("")}} onKeyDown={handleKey} placeholder="비밀번호" autoFocus/>
+              </div>
+              {error && <div className="text-sm" style={{color:"var(--danger)"}}>{error}</div>}
+              <button className="btn btn-primary" style={{justifyContent:"center",padding:12,width:"100%"}} onClick={handleLogin}>로그인 →</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function SetupScreen({ data, onUpdate }) {
@@ -1016,6 +1094,54 @@ function CostsPage({ data }) {
   );
 }
 
+function PasswordManager() {
+  var hasLock = !!localStorage.getItem(LOCK_KEY);
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [newPw2, setNewPw2] = useState("");
+  const [msg, setMsg] = useState("");
+  const [msgType, setMsgType] = useState("");
+
+  const changePw = async () => {
+    if (hasLock) {
+      var curHash = await hashPassword(curPw);
+      if (curHash !== localStorage.getItem(LOCK_KEY)) { setMsg("현재 비밀번호가 틀렸습니다."); setMsgType("error"); return; }
+    }
+    if (newPw.length < 4) { setMsg("새 비밀번호는 4자 이상이어야 합니다."); setMsgType("error"); return; }
+    if (newPw !== newPw2) { setMsg("새 비밀번호가 일치하지 않습니다."); setMsgType("error"); return; }
+    var hash = await hashPassword(newPw);
+    localStorage.setItem(LOCK_KEY, hash);
+    setCurPw(""); setNewPw(""); setNewPw2("");
+    setMsg("비밀번호가 변경되었습니다!"); setMsgType("success");
+  };
+
+  const removePw = async () => {
+    if (!hasLock) return;
+    var curHash = await hashPassword(curPw);
+    if (curHash !== localStorage.getItem(LOCK_KEY)) { setMsg("현재 비밀번호가 틀렸습니다."); setMsgType("error"); return; }
+    if (!confirm("비밀번호 잠금을 해제하시겠습니까?")) return;
+    localStorage.removeItem(LOCK_KEY);
+    setCurPw("");
+    setMsg("비밀번호가 제거되었습니다."); setMsgType("success");
+  };
+
+  return (
+    <div>
+      <div className="text-sm text-muted" style={{marginBottom:12}}>{hasLock ? "🔒 비밀번호가 설정되어 있습니다." : "🔓 비밀번호가 설정되지 않았습니다."}</div>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {hasLock && <input className="input" type="password" placeholder="현재 비밀번호" value={curPw} onChange={function(e){setCurPw(e.target.value);setMsg("")}}/>}
+        <input className="input" type="password" placeholder="새 비밀번호 (4자 이상)" value={newPw} onChange={function(e){setNewPw(e.target.value);setMsg("")}}/>
+        <input className="input" type="password" placeholder="새 비밀번호 확인" value={newPw2} onChange={function(e){setNewPw2(e.target.value);setMsg("")}}/>
+        {msg && <div className="text-sm" style={{color:msgType==="error"?"var(--danger)":"var(--success)"}}>{msg}</div>}
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn btn-primary" onClick={changePw}>{hasLock ? "비밀번호 변경" : "비밀번호 설정"}</button>
+          {hasLock && <button className="btn" onClick={removePw} style={{color:"var(--danger)"}}>비밀번호 제거</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ========== Settings Page ==========
 function SettingsPage({ data, onUpdate }) {
   const co = data.companies[0];
@@ -1116,6 +1242,13 @@ function SettingsPage({ data, onUpdate }) {
             </div>
             <button className="btn btn-primary" onClick={saveSettings}>{saved ? "✅ 저장됨!" : "💾 설정 저장"}</button>
           </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:16}}>비밀번호 관리</div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <PasswordManager/>
         </div>
       </div>
 
@@ -1452,8 +1585,12 @@ function ApprovalsPage({ data, onUpdate }) {
 function App() {
   const [data, setData] = useState(()=>load()||init());
   const [page, setPage] = useState("dashboard");
+  const [authed, setAuthed] = useState(()=>sessionStorage.getItem(AUTH_KEY)==="1");
 
   useEffect(()=>{save(data);},[data]);
+
+  if(localStorage.getItem(LOCK_KEY) && !authed) return <LockScreen onUnlock={()=>setAuthed(true)}/>;
+  if(!localStorage.getItem(LOCK_KEY) && !authed) return <LockScreen onUnlock={()=>setAuthed(true)}/>;
 
   if(!data.settings.apiKey) return <SetupScreen data={data} onUpdate={setData}/>;
 
