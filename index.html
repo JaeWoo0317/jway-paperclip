@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JWAY Paperclip</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📎</text></svg>">
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.26.9/babel.min.js"></script>
+  <style>
+    :root {
+      --bg-primary:#ffffff;--bg-secondary:#f8f9fa;--bg-tertiary:#f1f3f5;
+      --text-primary:#1a1a2e;--text-secondary:#6b7280;--text-tertiary:#9ca3af;
+      --border:#e5e7eb;--accent:#6366f1;--accent-light:#eef2ff;
+      --success:#10b981;--success-light:#ecfdf5;--warning:#f59e0b;--warning-light:#fffbeb;
+      --danger:#ef4444;--danger-light:#fef2f2;--info:#3b82f6;--info-light:#eff6ff;
+      --sidebar-width:240px;--header-height:56px;--radius:8px;--radius-lg:12px;--transition:150ms ease;
+    }
+    @media(prefers-color-scheme:dark){:root{
+      --bg-primary:#0f0f1a;--bg-secondary:#1a1a2e;--bg-tertiary:#16213e;
+      --text-primary:#e2e8f0;--text-secondary:#94a3b8;--text-tertiary:#64748b;
+      --border:#2d3748;--accent-light:#1e1b4b;--success-light:#064e3b;
+      --warning-light:#451a03;--danger-light:#450a0a;--info-light:#1e3a5f;
+    }}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg-tertiary);color:var(--text-primary);line-height:1.5}
+    .app{display:flex;height:100vh;overflow:hidden}
+    .sidebar{width:var(--sidebar-width);background:var(--bg-primary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
+    .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+    .header{height:var(--header-height);background:var(--bg-primary);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;gap:16px;flex-shrink:0}
+    .content{flex:1;overflow-y:auto;padding:24px}
+    .sidebar-brand{padding:16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);font-weight:600;font-size:15px}
+    .sidebar-section{padding:12px 8px 4px}
+    .sidebar-section-title{font-size:11px;font-weight:600;text-transform:uppercase;color:var(--text-tertiary);padding:0 8px 4px;letter-spacing:.05em}
+    .sidebar-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:var(--radius);cursor:pointer;font-size:14px;color:var(--text-secondary);transition:all var(--transition)}
+    .sidebar-item:hover{background:var(--bg-secondary);color:var(--text-primary)}
+    .sidebar-item.active{background:var(--accent-light);color:var(--accent);font-weight:500}
+    .sidebar-icon{font-size:16px;width:20px;text-align:center}
+    .sidebar-badge{margin-left:auto;background:var(--danger);color:white;font-size:11px;padding:1px 6px;border-radius:10px;font-weight:600}
+    .card{background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px}
+    .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
+    .metric-card{display:flex;flex-direction:column;gap:4px}
+    .metric-label{font-size:13px;color:var(--text-secondary)}
+    .metric-value{font-size:28px;font-weight:700}
+    .metric-sub{font-size:12px;color:var(--text-tertiary)}
+    .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:500}
+    .badge-idle{background:var(--bg-secondary);color:var(--text-secondary)}
+    .badge-working{background:var(--info-light);color:var(--info)}
+    .badge-paused{background:var(--warning-light);color:var(--warning)}
+    .badge-error{background:var(--danger-light);color:var(--danger)}
+    .badge-done{background:var(--success-light);color:var(--success)}
+    .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);font-size:14px;cursor:pointer;transition:all var(--transition)}
+    .btn:hover{background:var(--bg-secondary)}
+    .btn-primary{background:var(--accent);color:white;border-color:var(--accent)}
+    .btn-primary:hover{opacity:.9}
+    .table-row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);transition:background var(--transition)}
+    .table-row:hover{background:var(--bg-secondary)}
+    .table-row:last-child{border-bottom:none}
+    .input{width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--bg-primary);color:var(--text-primary);outline:none}
+    .input:focus{border-color:var(--accent)}
+    .setup-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg-tertiary)}
+    .setup-card{background:var(--bg-primary);border-radius:var(--radius-lg);padding:40px;max-width:480px;width:100%;border:1px solid var(--border);text-align:center}
+    .text-sm{font-size:13px}.text-muted{color:var(--text-secondary)}.font-medium{font-weight:500}.font-bold{font-weight:700}
+    #loading{display:flex;align-items:center;justify-content:center;height:100vh;color:#6b7280;font-family:sans-serif;font-size:16px}
+    @media(max-width:768px){.sidebar{display:none}.content{padding:16px}.card-grid{grid-template-columns:1fr 1fr}}
+    /* Kanban */
+    .kanban{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;min-height:0;flex:1}
+    .kanban-col{min-width:240px;width:240px;flex-shrink:0;display:flex;flex-direction:column;max-height:calc(100vh - 160px)}
+    .kanban-col-header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;font-size:13px;font-weight:600;border-radius:var(--radius) var(--radius) 0 0;background:var(--bg-secondary);border:1px solid var(--border);border-bottom:none}
+    .kanban-col-count{background:var(--bg-tertiary);color:var(--text-tertiary);font-size:11px;padding:1px 6px;border-radius:8px;font-weight:500}
+    .kanban-col-body{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:8px;background:var(--bg-secondary);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius)}
+    .kanban-card{background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;cursor:pointer;transition:all var(--transition);position:relative}
+    .kanban-card:hover{border-color:var(--accent);box-shadow:0 2px 8px rgba(99,102,241,0.1)}
+    .kanban-card-id{font-size:11px;color:var(--text-tertiary);font-weight:500}
+    .kanban-card-title{font-size:13px;font-weight:500;margin:4px 0}
+    .kanban-card-footer{display:flex;align-items:center;gap:6px;margin-top:6px}
+    .kanban-card-agent{font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:3px}
+    .priority-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .priority-low{background:#94a3b8}.priority-medium{background:#f59e0b}.priority-high{background:#ef4444}.priority-urgent{background:#dc2626;box-shadow:0 0 4px rgba(220,38,38,0.4)}
+    .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:100}
+    .modal{background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;width:90%;max-width:520px;max-height:80vh;overflow-y:auto}
+    .modal h2{font-size:18px;margin-bottom:16px}
+    .move-btns{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
+    .move-btn{font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;color:var(--text-secondary);transition:all var(--transition)}
+    .move-btn:hover{background:var(--accent-light);color:var(--accent);border-color:var(--accent)}
+    .move-btn.current{background:var(--accent);color:white;border-color:var(--accent)}
+  </style>
+</head>
+<body>
+<div id="root"><div id="loading">📎 로딩 중...</div></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+const STORAGE_KEY = "jway-paperclip";
+const VER = "0.2.0";
+const MODELS = {
+  "claude-opus-4-6":           { name: "Opus 4.6",   inputPer1M: 500, outputPer1M: 2500 },
+  "claude-sonnet-4-6":         { name: "Sonnet 4.6", inputPer1M: 300, outputPer1M: 1500 },
+  "claude-haiku-4-5-20251001": { name: "Haiku 4.5",  inputPer1M: 100, outputPer1M: 500  },
+};
+
+function load() { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : null; } catch(e) { return null; } }
+function save(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+function init() { return { version: VER, settings: { apiKey: "", companyName: "JWAY Digital" }, companies: [], agents: [], issues: [], projects: [], goals: [], costEvents: [], budgetPolicies: [], heartbeatRuns: [], routines: [], approvals: [], activityLog: [], plugins: [] }; }
+function uid() { return crypto.randomUUID(); }
+function now() { return new Date().toISOString(); }
+
+function SetupScreen({ data, onUpdate }) {
+  const [apiKey, setApiKey] = useState("");
+  const [name, setName] = useState("JWAY Digital");
+  const go = () => {
+    if (!apiKey.trim()) return alert("API 키를 입력해주세요.");
+    const cid = uid();
+    onUpdate({ ...data,
+      settings: { apiKey: apiKey.trim(), companyName: name },
+      companies: [{ id: cid, name, description: "JWAY Digital AI Company", status: "active", issuePrefix: "JWAY", issueCounter: 0, budgetMonthlyCents: 10000, spentMonthlyCents: 0, brandColor: "#6366f1", createdAt: now() }],
+    });
+  };
+  return (
+    <div className="setup-screen">
+      <div className="setup-card">
+        <div style={{fontSize:48,marginBottom:16}}>📎</div>
+        <h1 style={{fontSize:24,marginBottom:8}}>JWAY Paperclip</h1>
+        <p style={{color:"var(--text-secondary)",marginBottom:24}}>AI 에이전트 회사 운영 플랫폼</p>
+        <div style={{textAlign:"left",display:"flex",flexDirection:"column",gap:16}}>
+          <div>
+            <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>회사 이름</label>
+            <input className="input" value={name} onChange={e=>setName(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>Claude API Key</label>
+            <input className="input" type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-api03-..." />
+            <div className="text-sm text-muted" style={{marginTop:4}}>console.anthropic.com에서 발급</div>
+          </div>
+          <button className="btn btn-primary" style={{justifyContent:"center",padding:12,width:"100%"}} onClick={go}>시작하기 →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SidebarNav({ data, activePage, onNav }) {
+  const pa = data.approvals.filter(a=>a.status==="pending").length;
+  const wa = data.agents.filter(a=>a.status==="working").length;
+  const items = [
+    {id:"dashboard",icon:"📊",label:"대시보드"},
+    {id:"agents",icon:"👥",label:"에이전트",badge:wa||null},
+    {id:"issues",icon:"📋",label:"이슈"},
+    {id:"projects",icon:"📁",label:"프로젝트"},
+    {id:"goals",icon:"🎯",label:"목표"},
+    {id:"approvals",icon:"🛡️",label:"승인",badge:pa||null},
+    {id:"costs",icon:"💰",label:"비용"},
+    {id:"routines",icon:"💓",label:"Heartbeat"},
+    {id:"activity",icon:"📜",label:"활동 로그"},
+    {id:"settings",icon:"⚙️",label:"설정"},
+  ];
+  return (
+    <div className="sidebar">
+      <div className="sidebar-brand"><span style={{fontSize:20}}>📎</span> JWAY Paperclip</div>
+      <div className="sidebar-section">
+        <div className="sidebar-section-title">메뉴</div>
+        {items.map(it=>(
+          <div key={it.id} className={"sidebar-item"+(activePage===it.id?" active":"")} onClick={()=>onNav(it.id)}>
+            <span className="sidebar-icon">{it.icon}</span>{it.label}
+            {it.badge?<span className="sidebar-badge">{it.badge}</span>:null}
+          </div>
+        ))}
+      </div>
+      <div style={{flex:1}}/>
+      <div style={{padding:12,borderTop:"1px solid var(--border)",fontSize:12,color:"var(--text-tertiary)"}}>v{VER} · Phase 1</div>
+    </div>
+  );
+}
+
+function DashboardPage({ data }) {
+  const co = data.companies[0];
+  const n = new Date();
+  const mc = data.costEvents.filter(e=>{const d=new Date(e.occurredAt);return d.getUTCFullYear()===n.getUTCFullYear()&&d.getUTCMonth()===n.getUTCMonth();});
+  const ts = mc.reduce((s,e)=>s+(e.costCents||0),0);
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:24}}>
+      <div className="card-grid">
+        <div className="card metric-card"><div className="metric-label">활성 에이전트</div><div className="metric-value">{data.agents.filter(a=>a.status!=="paused").length}</div><div className="metric-sub">전체 {data.agents.length}명</div></div>
+        <div className="card metric-card"><div className="metric-label">진행 중 이슈</div><div className="metric-value">{data.issues.filter(i=>i.status==="in_progress").length}</div><div className="metric-sub">전체 {data.issues.length}건</div></div>
+        <div className="card metric-card"><div className="metric-label">이번 달 비용</div><div className="metric-value">{"$"+(ts/100).toFixed(2)}</div><div className="metric-sub">{"예산 $"+(co?(co.budgetMonthlyCents/100).toFixed(0):0)}</div></div>
+        <div className="card metric-card"><div className="metric-label">승인 대기</div><div className="metric-value">{data.approvals.filter(a=>a.status==="pending").length}</div><div className="metric-sub">이번 주</div></div>
+      </div>
+      <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
+        <div className="card" style={{flex:"1 1 400px"}}>
+          <div className="font-medium" style={{marginBottom:12}}>최근 활동</div>
+          {data.activityLog.length===0
+            ?<div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>아직 활동이 없습니다. 에이전트를 추가해보세요!</div>
+            :data.activityLog.slice(-10).reverse().map(l=>(
+              <div key={l.id} className="table-row text-sm"><span>{l.emoji||"📌"}</span><span style={{flex:1}}>{l.message}</span><span className="text-muted">{new Date(l.createdAt).toLocaleString("ko-KR")}</span></div>
+            ))
+          }
+        </div>
+        <div className="card" style={{flex:"1 1 300px"}}>
+          <div className="font-medium" style={{marginBottom:12}}>에이전트 현황</div>
+          {data.agents.length===0
+            ?<div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>에이전트가 없습니다</div>
+            :data.agents.map(a=>(
+              <div key={a.id} className="table-row"><span style={{fontSize:20}}>{a.icon||"🤖"}</span><div style={{flex:1}}><div className="text-sm font-medium">{a.name}</div><div className="text-sm text-muted">{a.title||a.role}</div></div><span className={"badge badge-"+a.status}>{a.status}</span></div>
+            ))
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentsPage({ data, onUpdate }) {
+  const [show, setShow] = useState(false);
+  const blank = {name:"",role:"engineer",title:"",icon:"🤖",model:"claude-sonnet-4-6",budget:2000,caps:"",reportsTo:""};
+  const [f, setF] = useState({...blank});
+
+  const create = () => {
+    if(!f.name.trim()) return;
+    const co = data.companies[0];
+    const ag = {id:uid(),companyId:co?co.id:"",name:f.name,role:f.role,title:f.title,icon:f.icon,status:"idle",reportsTo:f.reportsTo||null,capabilities:f.caps,adapterType:"claude_api",adapterConfig:{model:f.model,systemPrompt:"",maxTokens:4096},runtimeConfig:{},budgetMonthlyCents:parseInt(f.budget)||0,spentMonthlyCents:0,permissions:{canCreateIssues:true,canHireAgents:false},lastHeartbeatAt:null,createdAt:now(),updatedAt:now()};
+    onUpdate({...data,agents:[...data.agents,ag],activityLog:[...data.activityLog,{id:uid(),emoji:"👤",message:ag.name+" 에이전트가 "+(MODELS[f.model]||{}).name+" 모델로 채용됨",createdAt:now()}]});
+    setF({...blank}); setShow(false);
+  };
+
+  const del = (id) => {
+    const a = data.agents.find(x=>x.id===id);
+    onUpdate({...data,agents:data.agents.filter(x=>x.id!==id),activityLog:[...data.activityLog,{id:uid(),emoji:"🔴",message:(a?a.name:"에이전트")+" 해고됨",createdAt:now()}]});
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div className="font-bold" style={{fontSize:18}}>에이전트 ({data.agents.length})</div>
+        <button className="btn btn-primary" onClick={()=>setShow(!show)}>{show?"취소":"+ 에이전트 추가"}</button>
+      </div>
+      {show&&(
+        <div className="card" style={{display:"flex",flexDirection:"column",gap:8}}>
+          <div style={{display:"flex",gap:8}}>
+            <input className="input" placeholder="이름 *" value={f.name} onChange={e=>setF({...f,name:e.target.value})} style={{flex:1}}/>
+            <input className="input" placeholder="직함" value={f.title} onChange={e=>setF({...f,title:e.target.value})} style={{flex:1}}/>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <select className="input" value={f.role} onChange={e=>setF({...f,role:e.target.value})} style={{flex:1}}>
+              {["ceo","cto","cmo","coo","engineer","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
+            </select>
+            <select className="input" value={f.model} onChange={e=>setF({...f,model:e.target.value})} style={{flex:1}}>
+              <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
+              <option value="claude-sonnet-4-6">Sonnet 4.6 — $3/$15</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
+            </select>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input className="input" placeholder="아이콘" value={f.icon} onChange={e=>setF({...f,icon:e.target.value})} style={{width:80}}/>
+            <input className="input" type="number" placeholder="월 예산(cents)" value={f.budget} onChange={e=>setF({...f,budget:e.target.value})} style={{flex:1}}/>
+            <select className="input" value={f.reportsTo} onChange={e=>setF({...f,reportsTo:e.target.value})} style={{flex:1}}>
+              <option value="">보고 대상 없음</option>
+              {data.agents.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+          </div>
+          <input className="input" placeholder="역량 설명" value={f.caps} onChange={e=>setF({...f,caps:e.target.value})}/>
+          <button className="btn btn-primary" onClick={create}>에이전트 생성</button>
+        </div>
+      )}
+      <div className="card" style={{padding:0,overflow:"hidden"}}>
+        {data.agents.length===0
+          ?<div className="text-sm text-muted" style={{padding:40,textAlign:"center"}}>첫 번째 에이전트를 추가해보세요!</div>
+          :data.agents.map(a=>{
+            const mi=MODELS[a.adapterConfig?a.adapterConfig.model:""]||{name:"?"};
+            const mg=data.agents.find(x=>x.id===a.reportsTo);
+            return(
+              <div key={a.id} className="table-row">
+                <span style={{fontSize:24}}>{a.icon||"🤖"}</span>
+                <div style={{flex:1,minWidth:0}}><div className="font-medium">{a.name}</div><div className="text-sm text-muted">{a.title||a.role}{mg?" · → "+mg.name:""}</div></div>
+                <span className="text-sm" style={{color:"var(--accent)"}}>{mi.name}</span>
+                <span className={"badge badge-"+a.status}>{a.status}</span>
+                <span className="text-sm text-muted">{"$"+(a.spentMonthlyCents/100).toFixed(2)+" / $"+(a.budgetMonthlyCents/100).toFixed(0)}</span>
+                <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={()=>del(a.id)}>삭제</button>
+              </div>
+            );
+          })
+        }
+      </div>
+    </div>
+  );
+}
+
+function IssuesPage({ data, onUpdate }) {
+  const COLS = [
+    {id:"backlog",label:"Backlog",color:"var(--text-tertiary)"},
+    {id:"todo",label:"To Do",color:"var(--info)"},
+    {id:"in_progress",label:"진행 중",color:"var(--warning)"},
+    {id:"review",label:"리뷰",color:"var(--accent)"},
+    {id:"done",label:"완료",color:"var(--success)"},
+  ];
+  const PRIS = ["low","medium","high","urgent"];
+  const [showForm,setShowForm] = useState(false);
+  const [selected,setSelected] = useState(null);
+  const [dragId,setDragId] = useState(null);
+  const blank = {title:"",description:"",priority:"medium",assigneeAgentId:"",projectId:""};
+  const [f,setF] = useState({...blank});
+
+  const nextNumber = () => {
+    const co = data.companies[0];
+    if(!co) return {num:1,id:"JWAY-1"};
+    const n = (co.issueCounter||0)+1;
+    return {num:n,id:co.issuePrefix+"-"+n};
+  };
+
+  const create = () => {
+    if(!f.title.trim()) return;
+    const co = data.companies[0];
+    const {num,id:identifier} = nextNumber();
+    const issue = {id:uid(),companyId:co?co.id:"",projectId:f.projectId||null,goalId:null,parentId:null,title:f.title,description:f.description,status:"backlog",priority:f.priority,assigneeAgentId:f.assigneeAgentId||null,issueNumber:num,identifier:identifier,originKind:"manual",createdAt:now(),updatedAt:now(),startedAt:null,completedAt:null};
+    const updatedCo = co ? {...co, issueCounter:num} : co;
+    onUpdate({...data,
+      issues:[...data.issues,issue],
+      companies: data.companies.map(c=>c.id===co.id?updatedCo:c),
+      activityLog:[...data.activityLog,{id:uid(),emoji:"📋",message:identifier+" \""+f.title+"\" 이슈 생성됨",createdAt:now()}],
+    });
+    setF({...blank}); setShowForm(false);
+  };
+
+  const moveIssue = (issueId, newStatus) => {
+    const extra = {};
+    if(newStatus==="in_progress") extra.startedAt = now();
+    if(newStatus==="done") extra.completedAt = now();
+    onUpdate({...data,
+      issues:data.issues.map(i=>i.id===issueId?{...i,status:newStatus,updatedAt:now(),...extra}:i),
+      activityLog:[...data.activityLog,{id:uid(),emoji:newStatus==="done"?"✅":"🔄",message:(data.issues.find(i=>i.id===issueId)||{}).identifier+" → "+newStatus,createdAt:now()}],
+    });
+    if(selected && selected.id===issueId) setSelected({...selected,status:newStatus,...extra});
+  };
+
+  const deleteIssue = (issueId) => {
+    const issue = data.issues.find(i=>i.id===issueId);
+    onUpdate({...data,
+      issues:data.issues.filter(i=>i.id!==issueId),
+      activityLog:[...data.activityLog,{id:uid(),emoji:"🗑️",message:(issue?issue.identifier:"이슈")+" 삭제됨",createdAt:now()}],
+    });
+    setSelected(null);
+  };
+
+  const updateIssue = (issueId, changes) => {
+    onUpdate({...data,issues:data.issues.map(i=>i.id===issueId?{...i,...changes,updatedAt:now()}:i)});
+    if(selected && selected.id===issueId) setSelected({...selected,...changes});
+  };
+
+  const onDragStart = (e, id) => { setDragId(id); e.dataTransfer.effectAllowed="move"; };
+  const onDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect="move"; };
+  const onDrop = (e, colId) => { e.preventDefault(); if(dragId) moveIssue(dragId, colId); setDragId(null); };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16,height:"100%"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div className="font-bold" style={{fontSize:18}}>이슈 보드 ({data.issues.length})</div>
+        <button className="btn btn-primary" onClick={()=>setShowForm(!showForm)}>{showForm?"취소":"+ 이슈 생성"}</button>
+      </div>
+
+      {showForm&&(
+        <div className="card" style={{display:"flex",flexDirection:"column",gap:8}}>
+          <input className="input" placeholder="이슈 제목 *" value={f.title} onChange={e=>setF({...f,title:e.target.value})}/>
+          <textarea className="input" placeholder="설명 (선택)" value={f.description} onChange={e=>setF({...f,description:e.target.value})} rows={2} style={{resize:"vertical"}}/>
+          <div style={{display:"flex",gap:8}}>
+            <select className="input" value={f.priority} onChange={e=>setF({...f,priority:e.target.value})} style={{flex:1}}>
+              <option value="low">🟢 Low</option><option value="medium">🟡 Medium</option>
+              <option value="high">🔴 High</option><option value="urgent">🚨 Urgent</option>
+            </select>
+            <select className="input" value={f.assigneeAgentId} onChange={e=>setF({...f,assigneeAgentId:e.target.value})} style={{flex:1}}>
+              <option value="">담당자 없음</option>
+              {data.agents.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+            </select>
+            <select className="input" value={f.projectId} onChange={e=>setF({...f,projectId:e.target.value})} style={{flex:1}}>
+              <option value="">프로젝트 없음</option>
+              {data.projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          <button className="btn btn-primary" onClick={create}>이슈 생성</button>
+        </div>
+      )}
+
+      <div className="kanban">
+        {COLS.map(col=>{
+          const colIssues = data.issues.filter(i=>i.status===col.id).sort((a,b)=>{
+            const po={urgent:0,high:1,medium:2,low:3};
+            return (po[a.priority]||2)-(po[b.priority]||2);
+          });
+          return (
+            <div key={col.id} className="kanban-col">
+              <div className="kanban-col-header">
+                <span><span style={{color:col.color}}>●</span> {col.label}</span>
+                <span className="kanban-col-count">{colIssues.length}</span>
+              </div>
+              <div className="kanban-col-body" onDragOver={onDragOver} onDrop={e=>onDrop(e,col.id)}>
+                {colIssues.map(issue=>{
+                  const agent = data.agents.find(a=>a.id===issue.assigneeAgentId);
+                  return (
+                    <div key={issue.id} className="kanban-card" draggable onDragStart={e=>onDragStart(e,issue.id)} onClick={()=>setSelected(issue)}>
+                      <div className="kanban-card-id">{issue.identifier}</div>
+                      <div className="kanban-card-title">{issue.title}</div>
+                      <div className="kanban-card-footer">
+                        <span className={"priority-dot priority-"+issue.priority} title={issue.priority}/>
+                        {agent && <span className="kanban-card-agent">{agent.icon} {agent.name}</span>}
+                        {!agent && <span className="kanban-card-agent" style={{color:"var(--text-tertiary)"}}>미배정</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                {colIssues.length===0 && <div className="text-sm text-muted" style={{padding:16,textAlign:"center",opacity:0.5}}>드래그하여 이동</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setSelected(null)}}>
+          <div className="modal">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:16}}>
+              <div>
+                <div className="text-sm text-muted">{selected.identifier}</div>
+                <h2 style={{margin:0}}>{selected.title}</h2>
+              </div>
+              <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={()=>setSelected(null)}>✕</button>
+            </div>
+
+            {selected.description && <div className="text-sm" style={{marginBottom:16,padding:12,background:"var(--bg-secondary)",borderRadius:"var(--radius)",whiteSpace:"pre-wrap"}}>{selected.description}</div>}
+
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <div>
+                <div className="text-sm font-medium" style={{marginBottom:4}}>상태</div>
+                <div className="move-btns">
+                  {COLS.map(c=><button key={c.id} className={"move-btn"+(selected.status===c.id?" current":"")} onClick={()=>moveIssue(selected.id,c.id)}>{c.label}</button>)}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-medium" style={{marginBottom:4}}>우선순위</div>
+                <div className="move-btns">
+                  {PRIS.map(p=><button key={p} className={"move-btn"+(selected.priority===p?" current":"")} onClick={()=>updateIssue(selected.id,{priority:p})}>{p==="low"?"🟢 Low":p==="medium"?"🟡 Medium":p==="high"?"🔴 High":"🚨 Urgent"}</button>)}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-medium" style={{marginBottom:4}}>담당자</div>
+                <select className="input" value={selected.assigneeAgentId||""} onChange={e=>updateIssue(selected.id,{assigneeAgentId:e.target.value||null})}>
+                  <option value="">미배정</option>
+                  {data.agents.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
+                </select>
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:8}}>
+                <div className="text-sm text-muted" style={{flex:1}}>생성: {new Date(selected.createdAt).toLocaleString("ko-KR")}</div>
+                <button className="btn" style={{padding:"4px 12px",fontSize:12,color:"var(--danger)"}} onClick={()=>deleteIssue(selected.id)}>삭제</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Placeholder({ emoji, title, desc }) {
+  return <div className="card" style={{textAlign:"center",padding:60}}>
+    <div style={{fontSize:48,marginBottom:16}}>{emoji}</div>
+    <div className="font-bold" style={{fontSize:20,marginBottom:8}}>{title}</div>
+    <div className="text-muted">{desc}</div>
+    <div className="badge badge-idle" style={{marginTop:16}}>Phase 2+</div>
+  </div>;
+}
+
+function App() {
+  const [data, setData] = useState(()=>load()||init());
+  const [page, setPage] = useState("dashboard");
+
+  useEffect(()=>{save(data);},[data]);
+
+  if(!data.settings.apiKey) return <SetupScreen data={data} onUpdate={setData}/>;
+
+  const co = data.companies[0];
+  const pages = {
+    dashboard: <DashboardPage data={data} onUpdate={setData}/>,
+    agents: <AgentsPage data={data} onUpdate={setData}/>,
+    issues: <IssuesPage data={data} onUpdate={setData}/>,
+    projects: <Placeholder emoji="📁" title="프로젝트" desc="프로젝트 관리"/>,
+    goals: <Placeholder emoji="🎯" title="목표 계층" desc="회사 → 팀 → 에이전트"/>,
+    approvals: <Placeholder emoji="🛡️" title="승인 대기열" desc="거버넌스"/>,
+    costs: <Placeholder emoji="💰" title="비용 대시보드" desc="모델별 비용 추적"/>,
+    routines: <Placeholder emoji="💓" title="Heartbeat" desc="자동 스케줄링"/>,
+    activity: <Placeholder emoji="📜" title="활동 로그" desc="시간순 활동"/>,
+    settings: <Placeholder emoji="⚙️" title="설정" desc="API 키, 플러그인"/>,
+  };
+
+  return (
+    <div className="app">
+      <SidebarNav data={data} activePage={page} onNav={setPage}/>
+      <div className="main">
+        <div className="header">
+          <div className="font-medium">{co?co.name:"JWAY Digital"}</div>
+          <div style={{flex:1}}/>
+          <div className="text-sm text-muted">Board: JaeWoo</div>
+        </div>
+        <div className="content">{pages[page]||pages.dashboard}</div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
