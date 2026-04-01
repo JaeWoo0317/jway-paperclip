@@ -1016,13 +1016,437 @@ function CostsPage({ data }) {
   );
 }
 
-function Placeholder({ emoji, title, desc }) {
-  return <div className="card" style={{textAlign:"center",padding:60}}>
-    <div style={{fontSize:48,marginBottom:16}}>{emoji}</div>
-    <div className="font-bold" style={{fontSize:20,marginBottom:8}}>{title}</div>
-    <div className="text-muted">{desc}</div>
-    <div className="badge badge-idle" style={{marginTop:16}}>Phase 2+</div>
-  </div>;
+// ========== Settings Page ==========
+function SettingsPage({ data, onUpdate }) {
+  const co = data.companies[0];
+  const [apiKey, setApiKey] = useState(data.settings.apiKey || "");
+  const [companyName, setCompanyName] = useState(co ? co.name : "");
+  const [budget, setBudget] = useState(co ? co.budgetMonthlyCents : 10000);
+  const [desc, setDesc] = useState(co ? co.description : "");
+  const [brandColor, setBrandColor] = useState(co ? co.brandColor : "#6366f1");
+  const [saved, setSaved] = useState(false);
+
+  const saveSettings = () => {
+    var updatedSettings = { ...data.settings, apiKey: apiKey.trim(), companyName: companyName };
+    var updatedCompanies = data.companies.map(function(c) {
+      return c.id === co.id ? { ...c, name: companyName, description: desc, budgetMonthlyCents: parseInt(budget) || 10000, brandColor: brandColor } : c;
+    });
+    onUpdate({ ...data, settings: updatedSettings, companies: updatedCompanies });
+    setSaved(true);
+    setTimeout(function() { setSaved(false); }, 2000);
+  };
+
+  const resetSpent = () => {
+    if (!confirm("이번 달 모든 에이전트의 사용 비용을 초기화하시겠습니까?")) return;
+    var resetAgents = data.agents.map(function(a) { return { ...a, spentMonthlyCents: 0 }; });
+    var resetCompanies = data.companies.map(function(c) { return { ...c, spentMonthlyCents: 0 }; });
+    onUpdate({ ...data, agents: resetAgents, companies: resetCompanies, activityLog: [...data.activityLog, { id: uid(), emoji: "🔄", message: "월간 비용이 초기화됨", createdAt: now() }] });
+  };
+
+  const exportData = () => {
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "jway-paperclip-backup.json"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = () => {
+    var input = document.createElement("input"); input.type = "file"; input.accept = ".json";
+    input.onchange = function(e) {
+      var file = e.target.files[0]; if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        try {
+          var imported = JSON.parse(ev.target.result);
+          if (imported.version && imported.settings) {
+            onUpdate(imported);
+            alert("데이터를 성공적으로 가져왔습니다!");
+          } else { alert("유효하지 않은 파일 형식입니다."); }
+        } catch (err) { alert("파일 파싱 오류: " + err.message); }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
+  const clearAll = () => {
+    if (!confirm("모든 데이터를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다!")) return;
+    if (!confirm("정말로 삭제하시겠습니까? 모든 에이전트, 이슈, 비용 기록이 사라집니다.")) return;
+    localStorage.removeItem(STORAGE_KEY);
+    onUpdate(init());
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      <div className="font-bold" style={{fontSize:18}}>⚙️ 설정</div>
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:16}}>API 설정</div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div>
+            <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>Claude API Key</label>
+            <input className="input" type="password" value={apiKey} onChange={function(e){setApiKey(e.target.value)}} placeholder="sk-ant-api03-..."/>
+            <div className="text-sm text-muted" style={{marginTop:4}}>console.anthropic.com에서 발급</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:16}}>회사 설정</div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"flex",gap:12}}>
+            <div style={{flex:1}}>
+              <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>회사 이름</label>
+              <input className="input" value={companyName} onChange={function(e){setCompanyName(e.target.value)}}/>
+            </div>
+            <div style={{flex:1}}>
+              <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>월간 예산 (cents)</label>
+              <input className="input" type="number" value={budget} onChange={function(e){setBudget(e.target.value)}}/>
+              <div className="text-sm text-muted" style={{marginTop:4}}>{"현재: $" + (parseInt(budget) / 100).toFixed(0)}</div>
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>회사 설명</label>
+            <input className="input" value={desc} onChange={function(e){setDesc(e.target.value)}}/>
+          </div>
+          <div style={{display:"flex",gap:12,alignItems:"flex-end"}}>
+            <div>
+              <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>브랜드 색상</label>
+              <input type="color" value={brandColor} onChange={function(e){setBrandColor(e.target.value)}} style={{width:48,height:36,border:"1px solid var(--border)",borderRadius:"var(--radius)",cursor:"pointer"}}/>
+            </div>
+            <button className="btn btn-primary" onClick={saveSettings}>{saved ? "✅ 저장됨!" : "💾 설정 저장"}</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:16}}>데이터 관리</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button className="btn" onClick={exportData}>📥 데이터 백업 (JSON)</button>
+          <button className="btn" onClick={importData}>📤 데이터 가져오기</button>
+          <button className="btn" onClick={resetSpent} style={{color:"var(--warning)"}}>🔄 월간 비용 초기화</button>
+          <button className="btn" onClick={clearAll} style={{color:"var(--danger)"}}>🗑️ 전체 데이터 삭제</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:12}}>시스템 정보</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>버전</span><span className="text-sm">v{VER}</span></div>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>에이전트</span><span className="text-sm">{data.agents.length}명</span></div>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>이슈</span><span className="text-sm">{data.issues.length}건</span></div>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>프로젝트</span><span className="text-sm">{data.projects.length}개</span></div>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>비용 이벤트</span><span className="text-sm">{data.costEvents.length}건</span></div>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>Heartbeat 실행</span><span className="text-sm">{data.heartbeatRuns.length}회</span></div>
+          <div className="table-row"><span className="text-sm text-muted" style={{width:120}}>저장소 크기</span><span className="text-sm">{(JSON.stringify(data).length / 1024).toFixed(1)} KB</span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== Projects Page ==========
+function ProjectsPage({ data, onUpdate }) {
+  const [showForm, setShowForm] = useState(false);
+  const blank = { name: "", description: "", status: "active" };
+  const [f, setF] = useState({ ...blank });
+
+  const create = () => {
+    if (!f.name.trim()) return;
+    var co = data.companies[0];
+    var project = { id: uid(), companyId: co ? co.id : "", name: f.name, description: f.description, status: f.status, createdAt: now(), updatedAt: now() };
+    onUpdate({ ...data, projects: [...data.projects, project], activityLog: [...data.activityLog, { id: uid(), emoji: "📁", message: "프로젝트 \"" + f.name + "\" 생성됨", createdAt: now() }] });
+    setF({ ...blank }); setShowForm(false);
+  };
+
+  const del = (id) => {
+    var p = data.projects.find(function(x) { return x.id === id; });
+    var updatedIssues = data.issues.map(function(i) { return i.projectId === id ? { ...i, projectId: null } : i; });
+    onUpdate({ ...data, projects: data.projects.filter(function(x) { return x.id !== id; }), issues: updatedIssues, activityLog: [...data.activityLog, { id: uid(), emoji: "🗑️", message: "프로젝트 \"" + (p ? p.name : "") + "\" 삭제됨", createdAt: now() }] });
+  };
+
+  const toggleStatus = (id) => {
+    onUpdate({ ...data, projects: data.projects.map(function(p) { return p.id === id ? { ...p, status: p.status === "active" ? "archived" : "active", updatedAt: now() } : p; }) });
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div className="font-bold" style={{fontSize:18}}>📁 프로젝트 ({data.projects.length})</div>
+        <button className="btn btn-primary" onClick={function(){setShowForm(!showForm)}}>{showForm ? "취소" : "+ 프로젝트 생성"}</button>
+      </div>
+
+      {showForm && (
+        <div className="card" style={{display:"flex",flexDirection:"column",gap:8}}>
+          <input className="input" placeholder="프로젝트 이름 *" value={f.name} onChange={function(e){setF({...f,name:e.target.value})}}/>
+          <textarea className="input" placeholder="설명 (선택)" value={f.description} onChange={function(e){setF({...f,description:e.target.value})}} rows={2} style={{resize:"vertical"}}/>
+          <button className="btn btn-primary" onClick={create}>프로젝트 생성</button>
+        </div>
+      )}
+
+      {data.projects.length === 0
+        ? <div className="card" style={{textAlign:"center",padding:40}}><div className="text-sm text-muted">첫 번째 프로젝트를 만들어보세요!</div></div>
+        : data.projects.map(function(p) {
+          var projectIssues = data.issues.filter(function(i) { return i.projectId === p.id; });
+          var doneCount = projectIssues.filter(function(i) { return i.status === "done"; }).length;
+          var progressPct = projectIssues.length > 0 ? Math.round(doneCount / projectIssues.length * 100) : 0;
+          return (
+            <div key={p.id} className="card">
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                <span style={{fontSize:24}}>📁</span>
+                <div style={{flex:1}}>
+                  <div className="font-medium" style={{fontSize:16}}>{p.name}</div>
+                  {p.description && <div className="text-sm text-muted">{p.description}</div>}
+                </div>
+                <span className={"badge " + (p.status === "active" ? "badge-working" : "badge-idle")}>{p.status === "active" ? "활성" : "보관됨"}</span>
+                <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={function(){toggleStatus(p.id)}}>{p.status === "active" ? "보관" : "활성화"}</button>
+                <button className="btn" style={{padding:"4px 8px",fontSize:12,color:"var(--danger)"}} onClick={function(){del(p.id)}}>삭제</button>
+              </div>
+              <div style={{display:"flex",gap:16,alignItems:"center"}}>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                    <span className="text-sm text-muted">{"이슈 " + projectIssues.length + "건"}</span>
+                    <span className="text-sm text-muted">{doneCount + "/" + projectIssues.length + " 완료 (" + progressPct + "%)"}</span>
+                  </div>
+                  <div className="progress-bar">
+                    <div className="progress-fill" style={{width:progressPct+"%",background:"var(--success)"}}/>
+                  </div>
+                </div>
+              </div>
+              {projectIssues.length > 0 && (
+                <div style={{marginTop:12,display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {projectIssues.slice(0, 5).map(function(i) {
+                    return <span key={i.id} className={"badge badge-" + (i.status === "done" ? "done" : i.status === "in_progress" ? "working" : "idle")} style={{fontSize:11}}>{i.identifier + " " + i.title.substring(0, 20)}</span>;
+                  })}
+                  {projectIssues.length > 5 && <span className="text-sm text-muted">{"+" + (projectIssues.length - 5) + "건"}</span>}
+                </div>
+              )}
+            </div>
+          );
+        })
+      }
+    </div>
+  );
+}
+
+// ========== Goals Page ==========
+function GoalsPage({ data, onUpdate }) {
+  const [showForm, setShowForm] = useState(false);
+  const blank = { title: "", description: "", level: "company", assigneeAgentId: "", targetDate: "", status: "active" };
+  const [f, setF] = useState({ ...blank });
+
+  const create = () => {
+    if (!f.title.trim()) return;
+    var co = data.companies[0];
+    var goal = { id: uid(), companyId: co ? co.id : "", title: f.title, description: f.description, level: f.level, assigneeAgentId: f.assigneeAgentId || null, targetDate: f.targetDate || null, status: f.status, progress: 0, createdAt: now(), updatedAt: now() };
+    onUpdate({ ...data, goals: [...data.goals, goal], activityLog: [...data.activityLog, { id: uid(), emoji: "🎯", message: "목표 \"" + f.title + "\" 생성됨 (" + f.level + ")", createdAt: now() }] });
+    setF({ ...blank }); setShowForm(false);
+  };
+
+  const del = (id) => {
+    var g = data.goals.find(function(x) { return x.id === id; });
+    onUpdate({ ...data, goals: data.goals.filter(function(x) { return x.id !== id; }), activityLog: [...data.activityLog, { id: uid(), emoji: "🗑️", message: "목표 \"" + (g ? g.title : "") + "\" 삭제됨", createdAt: now() }] });
+  };
+
+  const updateProgress = (id, progress) => {
+    var newStatus = progress >= 100 ? "completed" : "active";
+    onUpdate({ ...data, goals: data.goals.map(function(g) { return g.id === id ? { ...g, progress: Math.min(100, Math.max(0, parseInt(progress) || 0)), status: newStatus, updatedAt: now() } : g; }) });
+  };
+
+  var levelLabels = { company: "🏢 회사", team: "👥 팀", agent: "🤖 에이전트" };
+  var companyGoals = data.goals.filter(function(g) { return g.level === "company"; });
+  var teamGoals = data.goals.filter(function(g) { return g.level === "team"; });
+  var agentGoals = data.goals.filter(function(g) { return g.level === "agent"; });
+
+  var renderGoal = function(g) {
+    var agent = g.assigneeAgentId ? data.agents.find(function(a) { return a.id === g.assigneeAgentId; }) : null;
+    var isCompleted = g.status === "completed" || g.progress >= 100;
+    return (
+      <div key={g.id} className="card" style={{padding:16,marginBottom:8,opacity:isCompleted?0.7:1}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+          <span>{isCompleted ? "✅" : "🎯"}</span>
+          <div style={{flex:1}}>
+            <div className="font-medium">{g.title}</div>
+            {g.description && <div className="text-sm text-muted">{g.description}</div>}
+          </div>
+          {agent && <span className="badge badge-idle" style={{fontSize:11}}>{agent.icon + " " + agent.name}</span>}
+          {g.targetDate && <span className="text-sm text-muted">{g.targetDate}</span>}
+          <button className="btn" style={{padding:"4px 8px",fontSize:12,color:"var(--danger)"}} onClick={function(){del(g.id)}}>삭제</button>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div className="progress-bar" style={{flex:1}}>
+            <div className="progress-fill" style={{width:(g.progress||0)+"%",background:isCompleted?"var(--success)":(g.progress||0)>=50?"var(--accent)":"var(--info)"}}/>
+          </div>
+          <input type="number" min="0" max="100" value={g.progress||0} onChange={function(e){updateProgress(g.id,e.target.value)}} style={{width:52,padding:"2px 6px",border:"1px solid var(--border)",borderRadius:4,fontSize:12,textAlign:"center",background:"var(--bg-primary)",color:"var(--text-primary)"}}/>
+          <span className="text-sm text-muted">%</span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div className="font-bold" style={{fontSize:18}}>🎯 목표 계층 ({data.goals.length})</div>
+        <button className="btn btn-primary" onClick={function(){setShowForm(!showForm)}}>{showForm ? "취소" : "+ 목표 추가"}</button>
+      </div>
+
+      {showForm && (
+        <div className="card" style={{display:"flex",flexDirection:"column",gap:8}}>
+          <input className="input" placeholder="목표 제목 *" value={f.title} onChange={function(e){setF({...f,title:e.target.value})}}/>
+          <textarea className="input" placeholder="설명 (선택)" value={f.description} onChange={function(e){setF({...f,description:e.target.value})}} rows={2} style={{resize:"vertical"}}/>
+          <div style={{display:"flex",gap:8}}>
+            <select className="input" value={f.level} onChange={function(e){setF({...f,level:e.target.value})}} style={{flex:1}}>
+              <option value="company">🏢 회사 목표</option>
+              <option value="team">👥 팀 목표</option>
+              <option value="agent">🤖 에이전트 목표</option>
+            </select>
+            <select className="input" value={f.assigneeAgentId} onChange={function(e){setF({...f,assigneeAgentId:e.target.value})}} style={{flex:1}}>
+              <option value="">담당자 없음</option>
+              {data.agents.map(function(a){return <option key={a.id} value={a.id}>{a.icon + " " + a.name}</option>})}
+            </select>
+            <input className="input" type="date" value={f.targetDate} onChange={function(e){setF({...f,targetDate:e.target.value})}} style={{flex:1}}/>
+          </div>
+          <button className="btn btn-primary" onClick={create}>목표 추가</button>
+        </div>
+      )}
+
+      {data.goals.length === 0
+        ? <div className="card" style={{textAlign:"center",padding:40}}><div className="text-sm text-muted">회사 → 팀 → 에이전트 순으로 목표를 설정해보세요!</div></div>
+        : (
+          <div style={{display:"flex",flexDirection:"column",gap:20}}>
+            {companyGoals.length > 0 && (
+              <div>
+                <div className="text-sm font-medium" style={{marginBottom:8,color:"var(--text-secondary)"}}>🏢 회사 목표 ({companyGoals.length})</div>
+                {companyGoals.map(renderGoal)}
+              </div>
+            )}
+            {teamGoals.length > 0 && (
+              <div>
+                <div className="text-sm font-medium" style={{marginBottom:8,color:"var(--text-secondary)"}}>👥 팀 목표 ({teamGoals.length})</div>
+                {teamGoals.map(renderGoal)}
+              </div>
+            )}
+            {agentGoals.length > 0 && (
+              <div>
+                <div className="text-sm font-medium" style={{marginBottom:8,color:"var(--text-secondary)"}}>🤖 에이전트 목표 ({agentGoals.length})</div>
+                {agentGoals.map(renderGoal)}
+              </div>
+            )}
+          </div>
+        )
+      }
+    </div>
+  );
+}
+
+// ========== Approvals Page ==========
+function ApprovalsPage({ data, onUpdate }) {
+  const [showForm, setShowForm] = useState(false);
+  const blank = { title: "", description: "", type: "action", requesterId: "" };
+  const [f, setF] = useState({ ...blank });
+
+  const create = () => {
+    if (!f.title.trim()) return;
+    var approval = { id: uid(), title: f.title, description: f.description, type: f.type, requesterId: f.requesterId || null, status: "pending", createdAt: now(), updatedAt: now(), resolvedAt: null, resolvedBy: "human" };
+    onUpdate({ ...data, approvals: [...data.approvals, approval], activityLog: [...data.activityLog, { id: uid(), emoji: "🛡️", message: "승인 요청: \"" + f.title + "\"", createdAt: now() }] });
+    setF({ ...blank }); setShowForm(false);
+  };
+
+  const resolve = (id, status) => {
+    var ap = data.approvals.find(function(a) { return a.id === id; });
+    onUpdate({ ...data,
+      approvals: data.approvals.map(function(a) { return a.id === id ? { ...a, status: status, resolvedAt: now(), updatedAt: now() } : a; }),
+      activityLog: [...data.activityLog, { id: uid(), emoji: status === "approved" ? "✅" : "❌", message: "\"" + (ap ? ap.title : "") + "\" " + (status === "approved" ? "승인됨" : "거부됨"), createdAt: now() }],
+    });
+  };
+
+  const del = (id) => {
+    onUpdate({ ...data, approvals: data.approvals.filter(function(a) { return a.id !== id; }) });
+  };
+
+  var pending = data.approvals.filter(function(a) { return a.status === "pending"; });
+  var resolved = data.approvals.filter(function(a) { return a.status !== "pending"; }).slice(-20).reverse();
+
+  var typeLabels = { action: "⚡ 액션", budget: "💰 예산", hire: "👤 채용", deploy: "🚀 배포", other: "📋 기타" };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div className="font-bold" style={{fontSize:18}}>{"🛡️ 승인 대기열 (" + pending.length + "건 대기)"}</div>
+        <button className="btn btn-primary" onClick={function(){setShowForm(!showForm)}}>{showForm ? "취소" : "+ 승인 요청"}</button>
+      </div>
+
+      {showForm && (
+        <div className="card" style={{display:"flex",flexDirection:"column",gap:8}}>
+          <input className="input" placeholder="승인 요청 제목 *" value={f.title} onChange={function(e){setF({...f,title:e.target.value})}}/>
+          <textarea className="input" placeholder="설명 (선택)" value={f.description} onChange={function(e){setF({...f,description:e.target.value})}} rows={2} style={{resize:"vertical"}}/>
+          <div style={{display:"flex",gap:8}}>
+            <select className="input" value={f.type} onChange={function(e){setF({...f,type:e.target.value})}} style={{flex:1}}>
+              <option value="action">⚡ 액션</option>
+              <option value="budget">💰 예산</option>
+              <option value="hire">👤 채용</option>
+              <option value="deploy">🚀 배포</option>
+              <option value="other">📋 기타</option>
+            </select>
+            <select className="input" value={f.requesterId} onChange={function(e){setF({...f,requesterId:e.target.value})}} style={{flex:1}}>
+              <option value="">요청자 (선택)</option>
+              {data.agents.map(function(a){return <option key={a.id} value={a.id}>{a.icon + " " + a.name}</option>})}
+            </select>
+          </div>
+          <button className="btn btn-primary" onClick={create}>승인 요청 생성</button>
+        </div>
+      )}
+
+      {/* Pending */}
+      <div className="card">
+        <div className="font-medium" style={{marginBottom:12}}>{"⏳ 대기 중 (" + pending.length + ")"}</div>
+        {pending.length === 0
+          ? <div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>대기 중인 승인 요청이 없습니다</div>
+          : pending.map(function(ap) {
+            var requester = ap.requesterId ? data.agents.find(function(a) { return a.id === ap.requesterId; }) : null;
+            return (
+              <div key={ap.id} className="table-row" style={{flexWrap:"wrap",gap:8}}>
+                <span className="badge badge-paused" style={{fontSize:11}}>{typeLabels[ap.type] || ap.type}</span>
+                <div style={{flex:"1 1 200px",minWidth:0}}>
+                  <div className="text-sm font-medium">{ap.title}</div>
+                  {ap.description && <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{ap.description}</div>}
+                </div>
+                {requester && <span className="text-sm text-muted">{requester.icon + " " + requester.name}</span>}
+                <span className="text-sm text-muted">{new Date(ap.createdAt).toLocaleString("ko-KR")}</span>
+                <div style={{display:"flex",gap:4}}>
+                  <button className="btn" style={{padding:"4px 12px",fontSize:12,background:"var(--success-light)",color:"var(--success)",borderColor:"var(--success)"}} onClick={function(){resolve(ap.id,"approved")}}>✅ 승인</button>
+                  <button className="btn" style={{padding:"4px 12px",fontSize:12,background:"var(--danger-light)",color:"var(--danger)",borderColor:"var(--danger)"}} onClick={function(){resolve(ap.id,"rejected")}}>❌ 거부</button>
+                </div>
+              </div>
+            );
+          })
+        }
+      </div>
+
+      {/* Resolved */}
+      {resolved.length > 0 && (
+        <div className="card">
+          <div className="font-medium" style={{marginBottom:12}}>{"📋 처리 완료 (최근 " + resolved.length + "건)"}</div>
+          {resolved.map(function(ap) {
+            var requester = ap.requesterId ? data.agents.find(function(a) { return a.id === ap.requesterId; }) : null;
+            return (
+              <div key={ap.id} className="table-row" style={{opacity:0.7}}>
+                <span className={"badge " + (ap.status === "approved" ? "badge-done" : "badge-error")} style={{fontSize:11}}>{ap.status === "approved" ? "승인됨" : "거부됨"}</span>
+                <span className="badge badge-idle" style={{fontSize:11}}>{typeLabels[ap.type] || ap.type}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="text-sm">{ap.title}</div>
+                </div>
+                {requester && <span className="text-sm text-muted">{requester.icon}</span>}
+                <span className="text-sm text-muted">{ap.resolvedAt ? new Date(ap.resolvedAt).toLocaleString("ko-KR") : ""}</span>
+                <button className="btn" style={{padding:"2px 6px",fontSize:11}} onClick={function(){del(ap.id)}}>삭제</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function App() {
@@ -1038,13 +1462,13 @@ function App() {
     dashboard: <DashboardPage data={data} onUpdate={setData}/>,
     agents: <AgentsPage data={data} onUpdate={setData}/>,
     issues: <IssuesPage data={data} onUpdate={setData}/>,
-    projects: <Placeholder emoji="📁" title="프로젝트" desc="프로젝트 관리"/>,
-    goals: <Placeholder emoji="🎯" title="목표 계층" desc="회사 → 팀 → 에이전트"/>,
-    approvals: <Placeholder emoji="🛡️" title="승인 대기열" desc="거버넌스"/>,
+    projects: <ProjectsPage data={data} onUpdate={setData}/>,
+    goals: <GoalsPage data={data} onUpdate={setData}/>,
+    approvals: <ApprovalsPage data={data} onUpdate={setData}/>,
     costs: <CostsPage data={data}/>,
     routines: <HeartbeatPage data={data} onUpdate={setData}/>,
     activity: <ActivityPage data={data}/>,
-    settings: <Placeholder emoji="⚙️" title="설정" desc="API 키, 플러그인"/>,
+    settings: <SettingsPage data={data} onUpdate={setData}/>,
   };
 
   return (
