@@ -505,6 +505,30 @@ function AgentsPage({ data, onUpdate }) {
     onUpdate({...data,agents:data.agents.filter(x=>x.id!==id),activityLog:[...data.activityLog,{id:uid(),emoji:"🔴",message:(a?a.name:"에이전트")+" 해고됨",createdAt:now()}]});
   };
 
+  const [editId, setEditId] = useState(null);
+  const [ef, setEf] = useState({});
+
+  const startEdit = (a) => {
+    setEditId(a.id);
+    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-6",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||""});
+  };
+
+  const saveEdit = () => {
+    var oldAgent = data.agents.find(x=>x.id===editId);
+    var oldModel = oldAgent&&oldAgent.adapterConfig?oldAgent.adapterConfig.model:"";
+    var changes = [];
+    if(oldModel!==ef.model) changes.push("모델→"+(MODELS[ef.model]||{}).name);
+    if(oldAgent.name!==ef.name) changes.push("이름→"+ef.name);
+    onUpdate({...data,
+      agents:data.agents.map(function(a){
+        if(a.id!==editId) return a;
+        return {...a,name:ef.name,title:ef.title,role:ef.role,icon:ef.icon,capabilities:ef.caps,reportsTo:ef.reportsTo||null,budgetMonthlyCents:parseInt(ef.budget)||0,adapterConfig:{...a.adapterConfig,model:ef.model},updatedAt:now()};
+      }),
+      activityLog:[...data.activityLog,{id:uid(),emoji:"✏️",message:(oldAgent?oldAgent.name:"에이전트")+" 수정됨"+(changes.length?" ("+changes.join(", ")+")":""),createdAt:now()}],
+    });
+    setEditId(null);
+  };
+
   return (
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -545,6 +569,38 @@ function AgentsPage({ data, onUpdate }) {
           :data.agents.map(a=>{
             const mi=MODELS[a.adapterConfig?a.adapterConfig.model:""]||{name:"?"};
             const mg=data.agents.find(x=>x.id===a.reportsTo);
+            if(editId===a.id) return(
+              <div key={a.id} className="card" style={{margin:8,display:"flex",flexDirection:"column",gap:8,border:"2px solid var(--accent)"}}>
+                <div className="text-sm font-medium" style={{color:"var(--accent)"}}>✏️ 에이전트 수정</div>
+                <div style={{display:"flex",gap:8}}>
+                  <input className="input" placeholder="이름" value={ef.name} onChange={e=>setEf({...ef,name:e.target.value})} style={{flex:1}}/>
+                  <input className="input" placeholder="직함" value={ef.title} onChange={e=>setEf({...ef,title:e.target.value})} style={{flex:1}}/>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <select className="input" value={ef.role} onChange={e=>setEf({...ef,role:e.target.value})} style={{flex:1}}>
+                    {["ceo","cto","cmo","coo","engineer","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
+                  </select>
+                  <select className="input" value={ef.model} onChange={e=>setEf({...ef,model:e.target.value})} style={{flex:1}}>
+                    <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
+                    <option value="claude-sonnet-4-6">Sonnet 4.6 — $3/$15</option>
+                    <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
+                  </select>
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <input className="input" placeholder="아이콘" value={ef.icon} onChange={e=>setEf({...ef,icon:e.target.value})} style={{width:80}}/>
+                  <input className="input" type="number" placeholder="월 예산(cents)" value={ef.budget} onChange={e=>setEf({...ef,budget:e.target.value})} style={{flex:1}}/>
+                  <select className="input" value={ef.reportsTo} onChange={e=>setEf({...ef,reportsTo:e.target.value})} style={{flex:1}}>
+                    <option value="">보고 대상 없음</option>
+                    {data.agents.filter(x=>x.id!==a.id).map(x=><option key={x.id} value={x.id}>{x.icon} {x.name}</option>)}
+                  </select>
+                </div>
+                <input className="input" placeholder="역량 설명" value={ef.caps} onChange={e=>setEf({...ef,caps:e.target.value})}/>
+                <div style={{display:"flex",gap:8}}>
+                  <button className="btn btn-primary" onClick={saveEdit}>💾 저장</button>
+                  <button className="btn" onClick={()=>setEditId(null)}>취소</button>
+                </div>
+              </div>
+            );
             return(
               <div key={a.id} className="table-row">
                 <span style={{fontSize:24}}>{a.icon||"🤖"}</span>
@@ -552,7 +608,8 @@ function AgentsPage({ data, onUpdate }) {
                 <span className="text-sm" style={{color:"var(--accent)"}}>{mi.name}</span>
                 <span className={"badge badge-"+a.status}>{a.status}</span>
                 <span className="text-sm text-muted">{"$"+(a.spentMonthlyCents/100).toFixed(2)+" / $"+(a.budgetMonthlyCents/100).toFixed(0)}</span>
-                <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={()=>del(a.id)}>삭제</button>
+                <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={()=>startEdit(a)}>수정</button>
+                <button className="btn" style={{padding:"4px 8px",fontSize:12,color:"var(--danger)"}} onClick={()=>del(a.id)}>삭제</button>
               </div>
             );
           })
