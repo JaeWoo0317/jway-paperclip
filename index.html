@@ -586,14 +586,18 @@ function DashboardPage({ data, onUpdate }) {
     setQuickResult(null);
     try {
       var roleList = Object.keys(ROLE_CAPS).join(", ");
-      var existingAgents = data.agents.map(function(a) { return a.name + "(" + a.role + ")"; }).join(", ");
+      var existingAgents = data.agents.map(function(a) { return a.name + "(" + a.role + ")" ; }).join(", ");
       var res = await callClaudeAPI(data.settings.apiKey, "claude-haiku-4-5-20251001",
-        "당신은 AI 에이전트 회사의 매니저입니다. 사용자의 요청을 분석하여 적절한 에이전트를 추천하세요. 반드시 JSON만 출력하세요.",
-        "사용자 요청: \"" + quickInput + "\"\n\n사용 가능한 역할: " + roleList + "\n기존 에이전트: " + (existingAgents || "없음") + "\n\n다음 JSON 형식으로만 응답:\n```json\n{\"name\": \"한국어 이름\", \"role\": \"역할키\", \"title\": \"직함\", \"icon\": \"이모지1개\", \"issueTitle\": \"이슈 제목\", \"issueDescription\": \"이슈 설명\", \"existingAgentName\": \"기존 에이전트가 적합하면 이름, 아니면 null\"}\n```", 1024);
+        "당신은 AI 에이전트 회사의 조직 설계자입니다. 사용자의 목표를 달성하기 위해 필요한 팀을 구성하세요. 목표의 규모에 맞게 2~6명의 팀을 추천하세요. 리더를 반드시 1명 포함하세요. 반드시 JSON만 출력하세요.",
+        "사용자 목표: \"" + quickInput + "\"\n\n사용 가능한 역할: " + roleList + "\n기존 에이전트: " + (existingAgents || "없음") + "\n\n다음 JSON 형식으로만 응답:\n```json\n{\n  \"projectName\": \"프로젝트 이름\",\n  \"projectDescription\": \"프로젝트 설명\",\n  \"team\": [\n    {\n      \"name\": \"한국어 이름\",\n      \"role\": \"역할키\",\n      \"title\": \"직함\",\n      \"icon\": \"이모지1개\",\n      \"isLeader\": true/false,\n      \"issueTitle\": \"이 에이전트에게 배정할 이슈 제목\",\n      \"issueDescription\": \"이슈 설명\",\n      \"existingAgentName\": \"기존 에이전트가 적합하면 이름, 아니면 null\"\n    }\n  ]\n}\n```", 2048);
       var text = res.content.map(function(c) { return c.text || ""; }).join("");
-      var jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*"name"[\s\S]*\}/);
+      var jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*"team"[\s\S]*\}/);
       var parsed = JSON.parse(jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : text);
-      parsed._existingAgent = parsed.existingAgentName ? data.agents.find(function(a) { return a.name === parsed.existingAgentName; }) : null;
+      if (parsed.team) {
+        parsed.team.forEach(function(m) {
+          m._existingAgent = m.existingAgentName ? data.agents.find(function(a) { return a.name === m.existingAgentName; }) : null;
+        });
+      }
       setQuickResult(parsed);
     } catch (e) {
       alert("분석 실패: " + e.message);
@@ -601,31 +605,54 @@ function DashboardPage({ data, onUpdate }) {
     setQuickLoading(false);
   };
 
-  const confirmQuick = (useExisting) => {
+  const confirmQuick = () => {
     var r = quickResult;
-    if (!r) return;
+    if (!r || !r.team || r.team.length === 0) return;
     var coId = co ? co.id : "";
-    var issueNum = (co ? co.issueCounter || 0 : 0) + 1;
+    var issueNum = co ? co.issueCounter || 0 : 0;
     var prefix = co ? co.issuePrefix || "JWAY" : "JWAY";
-    var agentId;
     var newAgents = [...data.agents];
+    var newIssues = [...data.issues];
     var logs = [];
+    var leaderId = null;
 
-    if (useExisting && r._existingAgent) {
-      agentId = r._existingAgent.id;
-      logs.push({ id: uid(), emoji: "🔄", message: "퀵 실행: 기존 에이전트 " + r._existingAgent.name + "에 이슈 배정", createdAt: now() });
-    } else {
-      var newAgent = { id: uid(), companyId: coId, name: r.name, role: r.role || "general", title: r.title || "", icon: r.icon || "🤖", status: "idle", reportsTo: null, capabilities: ROLE_CAPS[r.role] || "", adapterType: "claude_api", adapterConfig: { model: "claude-haiku-4-5-20251001", systemPrompt: "", maxTokens: 4096 }, runtimeConfig: {}, budgetMonthlyCents: 2000, spentMonthlyCents: 0, permissions: { canCreateIssues: true, canHireAgents: false }, lastHeartbeatAt: null, createdAt: now(), updatedAt: now() };
-      agentId = newAgent.id;
-      newAgents.push(newAgent);
-      logs.push({ id: uid(), emoji: "🚀", message: "퀵 실행: " + r.icon + " " + r.name + " 에이전트 자동 생성됨", createdAt: now() });
+    // 프로젝트 생성
+    var proj = { id: uid(), companyId: coId, name: r.projectName || quickInput, description: r.projectDescription || "", status: "active", createdAt: now(), updatedAt: now() };
+    logs.push({ id: uid(), emoji: "📁", message: "퀵 실행: 프로젝트 \"" + proj.name + "\" 생성됨", createdAt: now() });
+
+    // 리더 먼저 처리
+    var leader = r.team.find(function(m) { return m.isLeader; }) || r.team[0];
+
+    r.team.forEach(function(m) {
+      var agentId;
+      if (m._existingAgent) {
+        agentId = m._existingAgent.id;
+        logs.push({ id: uid(), emoji: "🔄", message: "퀵 실행: 기존 " + m._existingAgent.name + " 활용", createdAt: now() });
+      } else {
+        var newAgent = { id: uid(), companyId: coId, name: m.name, role: m.role || "general", title: m.title || "", icon: m.icon || "🤖", status: "idle", reportsTo: null, capabilities: ROLE_CAPS[m.role] || "", adapterType: "claude_api", adapterConfig: { model: "claude-haiku-4-5-20251001", systemPrompt: "", maxTokens: 4096 }, runtimeConfig: {}, budgetMonthlyCents: 2000, spentMonthlyCents: 0, permissions: { canCreateIssues: true, canHireAgents: false }, lastHeartbeatAt: null, createdAt: now(), updatedAt: now() };
+        agentId = newAgent.id;
+        if (m === leader) leaderId = agentId;
+        newAgents.push(newAgent);
+        logs.push({ id: uid(), emoji: "🚀", message: "퀵 실행: " + m.icon + " " + m.name + (m.isLeader ? " (리더)" : "") + " 생성됨", createdAt: now() });
+      }
+      if (m === leader) leaderId = agentId;
+
+      issueNum++;
+      var issue = { id: uid(), companyId: coId, projectId: proj.id, goalId: null, parentId: null, title: m.issueTitle || m.name + " 업무", description: m.issueDescription || "", status: "todo", priority: m.isLeader ? "high" : "medium", assigneeAgentId: agentId, issueNumber: issueNum, identifier: prefix + "-" + issueNum, originKind: "quick", createdAt: now(), updatedAt: now(), startedAt: null, completedAt: null };
+      newIssues.push(issue);
+    });
+
+    // 리더가 아닌 에이전트의 reportsTo를 리더로 설정
+    if (leaderId) {
+      newAgents = newAgents.map(function(a) {
+        var member = r.team.find(function(m) { return !m._existingAgent && m.name === a.name && m !== leader; });
+        if (member && a.id !== leaderId && !a.reportsTo) return { ...a, reportsTo: leaderId };
+        return a;
+      });
     }
 
-    var issue = { id: uid(), companyId: coId, projectId: null, goalId: null, parentId: null, title: r.issueTitle || quickInput, description: r.issueDescription || "", status: "todo", priority: "medium", assigneeAgentId: agentId, issueNumber: issueNum, identifier: prefix + "-" + issueNum, originKind: "quick", createdAt: now(), updatedAt: now(), startedAt: null, completedAt: null };
-    logs.push({ id: uid(), emoji: "📋", message: issue.identifier + " \"" + issue.title + "\" 이슈 생성 및 배정됨", createdAt: now() });
-
     var updatedCo = co ? { ...co, issueCounter: issueNum } : co;
-    onUpdate({ ...data, agents: newAgents, issues: [...data.issues, issue], companies: data.companies.map(function(c) { return c.id === coId ? updatedCo : c; }), activityLog: [...data.activityLog, ...logs] });
+    onUpdate({ ...data, agents: newAgents, issues: newIssues, projects: [...data.projects, proj], companies: data.companies.map(function(c) { return c.id === coId ? updatedCo : c; }), activityLog: [...data.activityLog, ...logs] });
     setQuickInput("");
     setQuickResult(null);
   };
@@ -638,23 +665,33 @@ function DashboardPage({ data, onUpdate }) {
           <input className="input" placeholder="예: 마케팅 전략을 세워줘, 랜딩 페이지 만들어줘, 블로그 글 써줘..." value={quickInput} onChange={e=>setQuickInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")analyzeTask()}} style={{flex:1}}/>
           <button className="btn btn-primary" onClick={analyzeTask} disabled={quickLoading||!quickInput.trim()}>{quickLoading?"분석 중...":"🚀 실행"}</button>
         </div>
-        {quickResult && (
+        {quickResult && quickResult.team && (
           <div style={{marginTop:12,padding:12,background:"var(--bg-secondary)",borderRadius:"var(--radius)",border:"1px solid var(--border)"}}>
-            <div style={{fontSize:13,fontWeight:600,marginBottom:8}}>추천 결과</div>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-              <span style={{fontSize:24}}>{quickResult.icon||"🤖"}</span>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
               <div>
-                <div style={{fontSize:13,fontWeight:600}}>{quickResult.name} <span style={{fontSize:11,color:"var(--accent)",fontWeight:400}}>{quickResult.title||quickResult.role}</span></div>
-                <div style={{fontSize:11,color:"var(--text-secondary)"}}>{ROLE_CAPS[quickResult.role]||""}</div>
+                <div style={{fontSize:14,fontWeight:600}}>📁 {quickResult.projectName||"프로젝트"}</div>
+                {quickResult.projectDescription && <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:2}}>{quickResult.projectDescription}</div>}
               </div>
+              <span style={{fontSize:12,color:"var(--accent)",fontWeight:500}}>{quickResult.team.length}명 팀</span>
             </div>
-            <div style={{fontSize:12,padding:"6px 10px",background:"var(--bg-tertiary)",borderRadius:6,marginBottom:10}}>
-              <span style={{fontWeight:500}}>📋 이슈:</span> {quickResult.issueTitle||quickInput}
-              {quickResult.issueDescription && <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:2}}>{quickResult.issueDescription}</div>}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8,marginBottom:10}}>
+              {quickResult.team.map(function(m,i) {
+                return (
+                  <div key={i} style={{padding:"10px 12px",background:"var(--bg-primary)",borderRadius:8,border:m.isLeader?"2px solid var(--accent)":"1px solid var(--border)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                      <span style={{fontSize:18}}>{m.icon||"🤖"}</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:12,fontWeight:600}}>{m.name}{m.isLeader?" ⭐":""} <span style={{fontWeight:400,color:"var(--text-secondary)"}}>{m.title||m.role}</span></div>
+                      </div>
+                      {m._existingAgent && <span style={{fontSize:10,color:"var(--info)",background:"var(--info-light)",padding:"0 4px",borderRadius:4}}>기존</span>}
+                    </div>
+                    <div style={{fontSize:11,color:"var(--text-secondary)",padding:"4px 6px",background:"var(--bg-tertiary)",borderRadius:4}}>📋 {m.issueTitle||"업무 배정"}</div>
+                  </div>
+                );
+              })}
             </div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <button className="btn btn-primary" style={{fontSize:12}} onClick={()=>confirmQuick(false)}>✅ 새 에이전트 생성 + 이슈 배정</button>
-              {quickResult._existingAgent && <button className="btn" style={{fontSize:12}} onClick={()=>confirmQuick(true)}>🔄 {quickResult._existingAgent.name}에 이슈만 배정</button>}
+              <button className="btn btn-primary" style={{fontSize:12}} onClick={confirmQuick}>✅ 팀 생성 + 프로젝트 + 이슈 배정</button>
               <button className="btn" style={{fontSize:12}} onClick={()=>setQuickResult(null)}>취소</button>
             </div>
           </div>
