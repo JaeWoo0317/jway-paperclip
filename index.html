@@ -588,8 +588,8 @@ function DashboardPage({ data, onUpdate }) {
       var roleList = Object.keys(ROLE_CAPS).join(", ");
       var existingAgents = data.agents.map(function(a) { return a.name + "(" + a.role + ")" ; }).join(", ");
       var res = await callClaudeAPI(data.settings.apiKey, "claude-haiku-4-5-20251001",
-        "당신은 AI 에이전트 회사의 조직 설계자입니다. 사용자의 목표를 달성하기 위해 필요한 팀을 구성하세요. 목표의 규모에 맞게 2~6명의 팀을 추천하세요. 리더를 반드시 1명 포함하세요. 반드시 JSON만 출력하세요.",
-        "사용자 목표: \"" + quickInput + "\"\n\n사용 가능한 역할: " + roleList + "\n기존 에이전트: " + (existingAgents || "없음") + "\n\n다음 JSON 형식으로만 응답:\n```json\n{\n  \"projectName\": \"프로젝트 이름\",\n  \"projectDescription\": \"프로젝트 설명\",\n  \"team\": [\n    {\n      \"name\": \"한국어 이름\",\n      \"role\": \"역할키\",\n      \"title\": \"직함\",\n      \"icon\": \"이모지1개\",\n      \"isLeader\": true/false,\n      \"issueTitle\": \"이 에이전트에게 배정할 이슈 제목\",\n      \"issueDescription\": \"이슈 설명\",\n      \"existingAgentName\": \"기존 에이전트가 적합하면 이름, 아니면 null\"\n    }\n  ]\n}\n```", 2048);
+        "당신은 AI 에이전트 회사의 조직 설계자입니다. 사용자의 목표를 달성하기 위해 필요한 팀을 구성하세요. 목표의 규모에 맞게 2~6명의 팀을 추천하세요. 리더를 반드시 1명 포함하세요.\n\n각 에이전트의 capabilities는 해당 프로젝트에 특화된 구체적인 역량을 5~8개 나열하세요.\nsystemPrompt는 에이전트가 이 프로젝트에서 어떻게 행동해야 하는지 구체적으로 지시하는 2~4문장의 프롬프트를 작성하세요. 역할, 전문 분야, 작업 방식, 응답 스타일을 포함하세요.\n\n반드시 JSON만 출력하세요.",
+        "사용자 목표: \"" + quickInput + "\"\n\n사용 가능한 역할: " + roleList + "\n기존 에이전트: " + (existingAgents || "없음") + "\n\n다음 JSON 형식으로만 응답:\n```json\n{\n  \"projectName\": \"프로젝트 이름\",\n  \"projectDescription\": \"프로젝트 설명\",\n  \"team\": [\n    {\n      \"name\": \"한국어 이름\",\n      \"role\": \"역할키\",\n      \"title\": \"직함\",\n      \"icon\": \"이모지1개\",\n      \"isLeader\": true/false,\n      \"capabilities\": \"이 프로젝트에 특화된 구체적 역량 (쉼표 구분, 5~8개)\",\n      \"systemPrompt\": \"이 에이전트의 행동 지침 (2~4문장, 역할/전문분야/작업방식/응답스타일 포함)\",\n      \"issueTitle\": \"이 에이전트에게 배정할 이슈 제목\",\n      \"issueDescription\": \"이슈 설명\",\n      \"existingAgentName\": \"기존 에이전트가 적합하면 이름, 아니면 null\"\n    }\n  ]\n}\n```", 4096);
       var text = res.content.map(function(c) { return c.text || ""; }).join("");
       var jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*"team"[\s\S]*\}/);
       var parsed = JSON.parse(jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : text);
@@ -629,7 +629,7 @@ function DashboardPage({ data, onUpdate }) {
         agentId = m._existingAgent.id;
         logs.push({ id: uid(), emoji: "🔄", message: "퀵 실행: 기존 " + m._existingAgent.name + " 활용", createdAt: now() });
       } else {
-        var newAgent = { id: uid(), companyId: coId, name: m.name, role: m.role || "general", title: m.title || "", icon: m.icon || "🤖", status: "idle", reportsTo: null, capabilities: ROLE_CAPS[m.role] || "", adapterType: "claude_api", adapterConfig: { model: "claude-haiku-4-5-20251001", systemPrompt: "", maxTokens: 4096 }, runtimeConfig: {}, budgetMonthlyCents: 2000, spentMonthlyCents: 0, permissions: { canCreateIssues: true, canHireAgents: false }, lastHeartbeatAt: null, createdAt: now(), updatedAt: now() };
+        var newAgent = { id: uid(), companyId: coId, name: m.name, role: m.role || "general", title: m.title || "", icon: m.icon || "🤖", status: "idle", reportsTo: null, capabilities: m.capabilities || ROLE_CAPS[m.role] || "", adapterType: "claude_api", adapterConfig: { model: "claude-haiku-4-5-20251001", systemPrompt: m.systemPrompt || "", maxTokens: 4096 }, runtimeConfig: {}, budgetMonthlyCents: 2000, spentMonthlyCents: 0, permissions: { canCreateIssues: true, canHireAgents: false }, lastHeartbeatAt: null, createdAt: now(), updatedAt: now() };
         agentId = newAgent.id;
         if (m === leader) leaderId = agentId;
         newAgents.push(newAgent);
