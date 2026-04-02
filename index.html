@@ -1252,6 +1252,35 @@ function SettingsPage({ data, onUpdate }) {
     input.click();
   };
 
+  const seedTeam = () => {
+    if (data.agents.length > 0 && !confirm("기존 에이전트가 있습니다. 추가로 스타트업 팀을 생성하시겠습니까?")) return;
+    var coId = co ? co.id : "";
+    var pm = {id:uid(),companyId:coId,name:"민지",role:"pm",title:"프로젝트 매니저",icon:"👩‍💼",status:"idle",reportsTo:null,capabilities:"프로젝트 관리, 일정 조율, 이슈 우선순위 결정, 팀 커뮤니케이션",adapterType:"claude_api",adapterConfig:{model:"claude-haiku-4-5-20251001",systemPrompt:"",maxTokens:4096},runtimeConfig:{},budgetMonthlyCents:3000,spentMonthlyCents:0,permissions:{canCreateIssues:true,canHireAgents:false},lastHeartbeatAt:null,createdAt:now(),updatedAt:now()};
+    var dev = {id:uid(),companyId:coId,name:"준혁",role:"engineer",title:"풀스택 개발자",icon:"👨‍💻",status:"idle",reportsTo:pm.id,capabilities:"React, Node.js, API 개발, 데이터베이스 설계, 코드 리뷰",adapterType:"claude_api",adapterConfig:{model:"claude-haiku-4-5-20251001",systemPrompt:"",maxTokens:4096},runtimeConfig:{},budgetMonthlyCents:3000,spentMonthlyCents:0,permissions:{canCreateIssues:true,canHireAgents:false},lastHeartbeatAt:null,createdAt:now(),updatedAt:now()};
+    var mkt = {id:uid(),companyId:coId,name:"서연",role:"analyst",title:"마케팅/그로스",icon:"📊",status:"idle",reportsTo:pm.id,capabilities:"시장 분석, 콘텐츠 기획, 그로스 전략, 사용자 리서치, 데이터 분석",adapterType:"claude_api",adapterConfig:{model:"claude-haiku-4-5-20251001",systemPrompt:"",maxTokens:4096},runtimeConfig:{},budgetMonthlyCents:2000,spentMonthlyCents:0,permissions:{canCreateIssues:true,canHireAgents:false},lastHeartbeatAt:null,createdAt:now(),updatedAt:now()};
+    var proj = {id:uid(),companyId:coId,name:"JWAY MVP 런칭",description:"MVP 제품 개발 및 초기 사용자 확보",status:"active",createdAt:now(),updatedAt:now()};
+    var issueNum = (co ? co.issueCounter || 0 : 0);
+    var prefix = co ? co.issuePrefix || "JWAY" : "JWAY";
+    var i1 = {id:uid(),companyId:coId,projectId:proj.id,goalId:null,parentId:null,title:"MVP 핵심 기능 정의 및 스펙 작성",description:"사용자 스토리 기반으로 MVP에 포함될 핵심 기능을 정의하고 기술 스펙 문서를 작성한다.",status:"todo",priority:"high",assigneeAgentId:pm.id,issueNumber:issueNum+1,identifier:prefix+"-"+(issueNum+1),originKind:"manual",createdAt:now(),updatedAt:now(),startedAt:null,completedAt:null};
+    var i2 = {id:uid(),companyId:coId,projectId:proj.id,goalId:null,parentId:null,title:"랜딩 페이지 개발 및 배포",description:"제품 소개 랜딩 페이지를 개발하고 배포한다. 얼리 액세스 신청 폼 포함.",status:"backlog",priority:"medium",assigneeAgentId:dev.id,issueNumber:issueNum+2,identifier:prefix+"-"+(issueNum+2),originKind:"manual",createdAt:now(),updatedAt:now(),startedAt:null,completedAt:null};
+    var i3 = {id:uid(),companyId:coId,projectId:proj.id,goalId:null,parentId:null,title:"초기 사용자 확보 전략 수립",description:"타겟 사용자 분석, 채널 전략, 콘텐츠 마케팅 계획을 수립한다.",status:"backlog",priority:"medium",assigneeAgentId:mkt.id,issueNumber:issueNum+3,identifier:prefix+"-"+(issueNum+3),originKind:"manual",createdAt:now(),updatedAt:now(),startedAt:null,completedAt:null};
+    var g1 = {id:uid(),companyId:coId,title:"Q2 MVP 런칭 및 초기 사용자 100명 확보",description:"2분기 내 MVP를 런칭하고 초기 사용자 100명을 확보한다.",level:"company",assigneeAgentId:null,targetDate:"2026-06-30",status:"active",progress:0,createdAt:now(),updatedAt:now()};
+    var g2 = {id:uid(),companyId:coId,title:"MVP 핵심 기능 개발 완료",description:"핵심 기능 3가지를 개발하고 배포한다.",level:"team",assigneeAgentId:null,targetDate:"2026-05-31",status:"active",progress:0,createdAt:now(),updatedAt:now()};
+    var g3 = {id:uid(),companyId:coId,title:"랜딩 페이지 배포 및 얼리 액세스 50명 확보",description:"랜딩 페이지를 배포하고 얼리 액세스 신청자 50명을 확보한다.",level:"agent",assigneeAgentId:mkt.id,targetDate:"2026-05-15",status:"active",progress:0,createdAt:now(),updatedAt:now()};
+    var updatedCo = co ? {...co, issueCounter: issueNum + 3} : co;
+    onUpdate({...data,
+      agents:[...data.agents, pm, dev, mkt],
+      projects:[...data.projects, proj],
+      issues:[...data.issues, i1, i2, i3],
+      goals:[...data.goals, g1, g2, g3],
+      companies: data.companies.map(function(c){ return c.id === coId ? updatedCo : c; }),
+      activityLog:[...data.activityLog,
+        {id:uid(),emoji:"🚀",message:"스타트업 운영팀 초기화: 에이전트 3명, 프로젝트 1개, 이슈 3개, 목표 3개 생성",createdAt:now()},
+      ],
+    });
+    alert("스타트업 운영팀이 생성되었습니다!\n\n👩‍💼 민지 (PM)\n👨‍💻 준혁 (개발자)\n📊 서연 (마케팅/그로스)");
+  };
+
   const clearAll = () => {
     if (!confirm("모든 데이터를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다!")) return;
     if (!confirm("정말로 삭제하시겠습니까? 모든 에이전트, 이슈, 비용 기록이 사라집니다.")) return;
@@ -1312,6 +1341,7 @@ function SettingsPage({ data, onUpdate }) {
       <div className="card">
         <div className="font-medium" style={{marginBottom:16}}>데이터 관리</div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button className="btn btn-primary" onClick={seedTeam}>🚀 스타트업 팀 초기화</button>
           <button className="btn" onClick={exportData}>📥 데이터 백업 (JSON)</button>
           <button className="btn" onClick={importData}>📤 데이터 가져오기</button>
           <button className="btn" onClick={resetSpent} style={{color:"var(--warning)"}}>🔄 월간 비용 초기화</button>
