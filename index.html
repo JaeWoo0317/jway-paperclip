@@ -125,7 +125,8 @@ async function hashPassword(pw) {
 }
 const MODELS = {
   "claude-opus-4-6":           { name: "Opus 4.6",   inputPer1M: 500, outputPer1M: 2500 },
-  "claude-sonnet-4-6":         { name: "Sonnet 4.6", inputPer1M: 300, outputPer1M: 1500 },
+  "claude-sonnet-4-5":         { name: "Sonnet 4.5", inputPer1M: 300, outputPer1M: 1500 },
+  "claude-sonnet-4-6":         { name: "Sonnet 4.5", inputPer1M: 300, outputPer1M: 1500 },
   "claude-haiku-4-5-20251001": { name: "Haiku 4.5",  inputPer1M: 100, outputPer1M: 500  },
 };
 
@@ -166,7 +167,7 @@ function calcCostCents(model, usage) {
   const inp = ((usage.input_tokens || 0) / 1000000) * p.inputPer1M;
   const cached = ((usage.cache_read_input_tokens || 0) / 1000000) * p.inputPer1M * 0.1;
   const out = ((usage.output_tokens || 0) / 1000000) * p.outputPer1M;
-  return Math.round(inp + cached + out);
+  return Math.round((inp + cached + out) * 100) / 100;
 }
 
 // ========== Heartbeat Engine ==========
@@ -220,7 +221,7 @@ async function executeHeartbeat(agent, data, onUpdate) {
     return { error: "budget_exceeded", agent: agent.name };
   }
 
-  var model = (agent.adapterConfig && agent.adapterConfig.model) || "claude-sonnet-4-6";
+  var model = (agent.adapterConfig && agent.adapterConfig.model) || "claude-sonnet-4-5";
   var systemPrompt = (agent.adapterConfig && agent.adapterConfig.systemPrompt) || "";
   if (!systemPrompt) {
     systemPrompt = "당신은 AI 에이전트 회사의 " + (agent.title || agent.role) + "입니다. 주어진 업무를 성실히 수행하세요. 한국어로 응답하세요.";
@@ -510,7 +511,7 @@ function AgentsPage({ data, onUpdate }) {
 
   const startEdit = (a) => {
     setEditId(a.id);
-    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-6",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||""});
+    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-5",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||""});
   };
 
   const saveEdit = () => {
@@ -547,13 +548,13 @@ function AgentsPage({ data, onUpdate }) {
             </select>
             <select className="input" value={f.model} onChange={e=>setF({...f,model:e.target.value})} style={{flex:1}}>
               <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
-              <option value="claude-sonnet-4-6">Sonnet 4.6 — $3/$15</option>
+              <option value="claude-sonnet-4-5">Sonnet 4.5 — $3/$15</option>
               <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
             </select>
           </div>
           <div style={{display:"flex",gap:8}}>
             <input className="input" placeholder="아이콘" value={f.icon} onChange={e=>setF({...f,icon:e.target.value})} style={{width:80}}/>
-            <input className="input" type="number" placeholder="월 예산(cents)" value={f.budget} onChange={e=>setF({...f,budget:e.target.value})} style={{flex:1}}/>
+            <div style={{flex:1,position:"relative"}}><input className="input" type="number" placeholder="월 예산(cents)" value={f.budget} onChange={e=>setF({...f,budget:e.target.value})} style={{width:"100%"}}/><div className="text-sm text-muted" style={{marginTop:2}}>{"= $" + (parseInt(f.budget||0) / 100).toFixed(2)}</div></div>
             <select className="input" value={f.reportsTo} onChange={e=>setF({...f,reportsTo:e.target.value})} style={{flex:1}}>
               <option value="">보고 대상 없음</option>
               {data.agents.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
@@ -582,13 +583,13 @@ function AgentsPage({ data, onUpdate }) {
                   </select>
                   <select className="input" value={ef.model} onChange={e=>setEf({...ef,model:e.target.value})} style={{flex:1}}>
                     <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
-                    <option value="claude-sonnet-4-6">Sonnet 4.6 — $3/$15</option>
+                    <option value="claude-sonnet-4-5">Sonnet 4.5 — $3/$15</option>
                     <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
                   </select>
                 </div>
                 <div style={{display:"flex",gap:8}}>
                   <input className="input" placeholder="아이콘" value={ef.icon} onChange={e=>setEf({...ef,icon:e.target.value})} style={{width:80}}/>
-                  <input className="input" type="number" placeholder="월 예산(cents)" value={ef.budget} onChange={e=>setEf({...ef,budget:e.target.value})} style={{flex:1}}/>
+                  <div style={{flex:1,position:"relative"}}><input className="input" type="number" placeholder="월 예산(cents)" value={ef.budget} onChange={e=>setEf({...ef,budget:e.target.value})} style={{width:"100%"}}/><div className="text-sm text-muted" style={{marginTop:2}}>{"= $" + (parseInt(ef.budget||0) / 100).toFixed(2)}</div></div>
                   <select className="input" value={ef.reportsTo} onChange={e=>setEf({...ef,reportsTo:e.target.value})} style={{flex:1}}>
                     <option value="">보고 대상 없음</option>
                     {data.agents.filter(x=>x.id!==a.id).map(x=><option key={x.id} value={x.id}>{x.icon} {x.name}</option>)}
@@ -804,7 +805,9 @@ function HeartbeatPage({ data, onUpdate }) {
   const runAgent = async (agent) => {
     setRunning(agent.id);
     setLastResult(null);
-    var result = await executeHeartbeat(agent, data, onUpdate);
+    var freshData = load() || data;
+    var freshAgent = freshData.agents.find(function(a) { return a.id === agent.id; }) || agent;
+    var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); });
     setLastResult(result);
     setRunning(null);
   };
@@ -812,7 +815,9 @@ function HeartbeatPage({ data, onUpdate }) {
   const runAll = async () => {
     for (var i = 0; i < activeAgents.length; i++) {
       setRunning(activeAgents[i].id);
-      var result = await executeHeartbeat(activeAgents[i], data, onUpdate);
+      var freshData = load() || data;
+      var freshAgent = freshData.agents.find(function(a) { return a.id === activeAgents[i].id; }) || activeAgents[i];
+      var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); });
       setLastResult(result);
     }
     setRunning(null);
@@ -996,7 +1001,7 @@ function CostsPage({ data }) {
     modelMap[e.model].inputTokens += (e.inputTokens || 0);
     modelMap[e.model].outputTokens += (e.outputTokens || 0);
   });
-  var modelColors = { "claude-opus-4-6": "#8b5cf6", "claude-sonnet-4-6": "#6366f1", "claude-haiku-4-5-20251001": "#06b6d4" };
+  var modelColors = { "claude-opus-4-6": "#8b5cf6", "claude-sonnet-4-5": "#6366f1", "claude-haiku-4-5-20251001": "#06b6d4" };
   var modelEntries = Object.keys(modelMap).map(function(k) {
     return { model: k, name: (MODELS[k] || {}).name || k, color: modelColors[k] || "#94a3b8", ...modelMap[k] };
   }).sort(function(a, b) { return b.cost - a.cost; });
@@ -1314,7 +1319,7 @@ function SettingsPage({ data, onUpdate }) {
             <div style={{flex:1}}>
               <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>월간 예산 (cents)</label>
               <input className="input" type="number" value={budget} onChange={function(e){setBudget(e.target.value)}}/>
-              <div className="text-sm text-muted" style={{marginTop:4}}>{"현재: $" + (parseInt(budget) / 100).toFixed(0)}</div>
+              <div className="text-sm text-muted" style={{marginTop:4}}>{"= $" + (parseInt(budget||0) / 100).toFixed(2)}</div>
             </div>
           </div>
           <div>
