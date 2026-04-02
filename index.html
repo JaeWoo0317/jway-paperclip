@@ -546,7 +546,7 @@ function AgentsPage({ data, onUpdate }) {
 
   const startEdit = (a) => {
     setEditId(a.id);
-    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-5",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||""});
+    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-5",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||"",systemPrompt:(a.adapterConfig&&a.adapterConfig.systemPrompt)||""});
   };
 
   const saveEdit = () => {
@@ -558,7 +558,7 @@ function AgentsPage({ data, onUpdate }) {
     onUpdate({...data,
       agents:data.agents.map(function(a){
         if(a.id!==editId) return a;
-        return {...a,name:ef.name,title:ef.title,role:ef.role,icon:ef.icon,capabilities:ef.caps,reportsTo:ef.reportsTo||null,budgetMonthlyCents:parseInt(ef.budget)||0,adapterConfig:{...a.adapterConfig,model:ef.model},updatedAt:now()};
+        return {...a,name:ef.name,title:ef.title,role:ef.role,icon:ef.icon,capabilities:ef.caps,reportsTo:ef.reportsTo||null,budgetMonthlyCents:parseInt(ef.budget)||0,adapterConfig:{...a.adapterConfig,model:ef.model,systemPrompt:ef.systemPrompt||""},updatedAt:now()};
       }),
       activityLog:[...data.activityLog,{id:uid(),emoji:"✏️",message:(oldAgent?oldAgent.name:"에이전트")+" 수정됨"+(changes.length?" ("+changes.join(", ")+")":""),createdAt:now()}],
     });
@@ -631,6 +631,10 @@ function AgentsPage({ data, onUpdate }) {
                   </select>
                 </div>
                 <input className="input" placeholder="역량 설명" value={ef.caps} onChange={e=>setEf({...ef,caps:e.target.value})}/>
+                <div>
+                  <label style={{fontSize:12,color:"var(--text-secondary)",display:"block",marginBottom:4}}>시스템 프롬프트 (비어있으면 기본값 사용)</label>
+                  <textarea className="input" placeholder="에이전트에게 전달할 커스텀 지시사항..." value={ef.systemPrompt} onChange={e=>setEf({...ef,systemPrompt:e.target.value})} rows={3} style={{resize:"vertical"}}/>
+                </div>
                 <div style={{display:"flex",gap:8}}>
                   <button className="btn btn-primary" onClick={saveEdit}>💾 저장</button>
                   <button className="btn" onClick={()=>setEditId(null)}>취소</button>
