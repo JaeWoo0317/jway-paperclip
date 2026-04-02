@@ -63,7 +63,38 @@
     .setup-card{background:var(--bg-primary);border-radius:var(--radius-lg);padding:40px;max-width:480px;width:100%;border:1px solid var(--border);text-align:center}
     .text-sm{font-size:13px}.text-muted{color:var(--text-secondary)}.font-medium{font-weight:500}.font-bold{font-weight:700}
     #loading{display:flex;align-items:center;justify-content:center;height:100vh;color:#6b7280;font-family:sans-serif;font-size:16px}
-    @media(max-width:768px){.sidebar{display:none}.content{padding:16px}.card-grid{grid-template-columns:1fr 1fr}}
+    .mobile-menu-btn{display:none;background:none;border:none;font-size:24px;cursor:pointer;padding:4px 8px;color:var(--text-primary)}
+    .sidebar-overlay{display:none}
+    @media(max-width:768px){
+      .sidebar{display:none;position:fixed;top:0;left:0;bottom:0;z-index:1000;box-shadow:4px 0 24px rgba(0,0,0,0.2)}
+      .sidebar.open{display:flex}
+      .sidebar-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999}
+      .sidebar-overlay.open{display:block}
+      .mobile-menu-btn{display:block}
+      .header{padding:0 12px;gap:8px}
+      .content{padding:12px}
+      .card{padding:14px}
+      .card-grid{grid-template-columns:1fr 1fr;gap:10px}
+      .metric-value{font-size:20px}
+      .metric-label{font-size:12px}
+      .kanban{flex-direction:column;gap:8px}
+      .kanban-col{min-width:100%;width:100%;max-height:none}
+      .kanban-col-body{max-height:300px}
+      .table-row{flex-direction:column;gap:4px;padding:10px 12px}
+      .btn{padding:8px 12px;font-size:13px}
+      .input{padding:8px 12px;font-size:14px}
+      .modal{width:95%;max-width:none;padding:16px;margin:8px}
+      .setup-card{padding:24px;margin:16px}
+      .run-card-header{flex-wrap:wrap}
+      .daily-chart{height:80px}
+      .model-segment{min-width:4px}
+    }
+    @media(max-width:480px){
+      .card-grid{grid-template-columns:1fr}
+      .metric-value{font-size:18px}
+      .header{padding:0 8px;gap:6px}
+      .content{padding:8px}
+    }
     /* Kanban */
     .kanban{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;min-height:0;flex:1}
     .kanban-col{min-width:240px;width:240px;flex-shrink:0;display:flex;flex-direction:column;max-height:calc(100vh - 160px)}
@@ -418,7 +449,7 @@ function SetupScreen({ data, onUpdate }) {
   );
 }
 
-function SidebarNav({ data, activePage, onNav }) {
+function SidebarNav({ data, activePage, onNav, mobileOpen, onClose }) {
   const pa = data.approvals.filter(a=>a.status==="pending").length;
   const wa = data.agents.filter(a=>a.status==="working").length;
   const items = [
@@ -433,21 +464,25 @@ function SidebarNav({ data, activePage, onNav }) {
     {id:"activity",icon:"📜",label:"활동 로그"},
     {id:"settings",icon:"⚙️",label:"설정"},
   ];
+  const handleNav = (id) => { onNav(id); if(onClose) onClose(); };
   return (
-    <div className="sidebar">
-      <div className="sidebar-brand"><span style={{fontSize:20}}>📎</span> JWAY Paperclip</div>
-      <div className="sidebar-section">
-        <div className="sidebar-section-title">메뉴</div>
-        {items.map(it=>(
-          <div key={it.id} className={"sidebar-item"+(activePage===it.id?" active":"")} onClick={()=>onNav(it.id)}>
-            <span className="sidebar-icon">{it.icon}</span>{it.label}
-            {it.badge?<span className="sidebar-badge">{it.badge}</span>:null}
-          </div>
-        ))}
+    <React.Fragment>
+      <div className={"sidebar-overlay"+(mobileOpen?" open":"")} onClick={onClose}/>
+      <div className={"sidebar"+(mobileOpen?" open":"")}>
+        <div className="sidebar-brand"><span style={{fontSize:20}}>📎</span> JWAY Paperclip</div>
+        <div className="sidebar-section">
+          <div className="sidebar-section-title">메뉴</div>
+          {items.map(it=>(
+            <div key={it.id} className={"sidebar-item"+(activePage===it.id?" active":"")} onClick={()=>handleNav(it.id)}>
+              <span className="sidebar-icon">{it.icon}</span>{it.label}
+              {it.badge?<span className="sidebar-badge">{it.badge}</span>:null}
+            </div>
+          ))}
+        </div>
+        <div style={{flex:1}}/>
+        <div style={{padding:12,borderTop:"1px solid var(--border)",fontSize:12,color:"var(--text-tertiary)"}}>v{VER} · Phase 3</div>
       </div>
-      <div style={{flex:1}}/>
-      <div style={{padding:12,borderTop:"1px solid var(--border)",fontSize:12,color:"var(--text-tertiary)"}}>v{VER} · Phase 3</div>
-    </div>
+    </React.Fragment>
   );
 }
 
@@ -457,29 +492,29 @@ function DashboardPage({ data }) {
   const mc = data.costEvents.filter(e=>{const d=new Date(e.occurredAt);return d.getUTCFullYear()===n.getUTCFullYear()&&d.getUTCMonth()===n.getUTCMonth();});
   const ts = mc.reduce((s,e)=>s+(e.costCents||0),0);
   return (
-    <div style={{display:"flex",flexDirection:"column",gap:24}}>
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
       <div className="card-grid">
-        <div className="card metric-card"><div className="metric-label">활성 에이전트</div><div className="metric-value">{data.agents.filter(a=>a.status!=="paused").length}</div><div className="metric-sub">전체 {data.agents.length}명</div></div>
-        <div className="card metric-card"><div className="metric-label">진행 중 이슈</div><div className="metric-value">{data.issues.filter(i=>i.status==="in_progress").length}</div><div className="metric-sub">전체 {data.issues.length}건</div></div>
-        <div className="card metric-card"><div className="metric-label">이번 달 비용</div><div className="metric-value">{"$"+(ts/100).toFixed(2)}</div><div className="metric-sub">{"예산 $"+(co?(co.budgetMonthlyCents/100).toFixed(0):0)}</div></div>
-        <div className="card metric-card"><div className="metric-label">승인 대기</div><div className="metric-value">{data.approvals.filter(a=>a.status==="pending").length}</div><div className="metric-sub">이번 주</div></div>
+        <div className="card metric-card" style={{padding:14}}><div className="metric-label">활성 에이전트</div><div className="metric-value">{data.agents.filter(a=>a.status!=="paused").length}<span style={{fontSize:13,fontWeight:400,color:"var(--text-tertiary)"}}>{" / "+data.agents.length}</span></div></div>
+        <div className="card metric-card" style={{padding:14}}><div className="metric-label">진행 중 이슈</div><div className="metric-value">{data.issues.filter(i=>i.status==="in_progress").length}<span style={{fontSize:13,fontWeight:400,color:"var(--text-tertiary)"}}>{" / "+data.issues.length}</span></div></div>
+        <div className="card metric-card" style={{padding:14}}><div className="metric-label">이번 달 비용</div><div className="metric-value">{"$"+(ts/100).toFixed(2)}<span style={{fontSize:13,fontWeight:400,color:"var(--text-tertiary)"}}>{" / $"+(co?(co.budgetMonthlyCents/100).toFixed(0):0)}</span></div></div>
+        <div className="card metric-card" style={{padding:14}}><div className="metric-label">승인 대기</div><div className="metric-value">{data.approvals.filter(a=>a.status==="pending").length}</div></div>
       </div>
-      <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
-        <div className="card" style={{flex:"1 1 400px"}}>
-          <div className="font-medium" style={{marginBottom:12}}>최근 활동</div>
+      <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+        <div className="card" style={{flex:"1 1 360px",padding:14}}>
+          <div className="font-medium" style={{marginBottom:8,fontSize:14}}>최근 활동</div>
           {data.activityLog.length===0
-            ?<div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>아직 활동이 없습니다. 에이전트를 추가해보세요!</div>
-            :data.activityLog.slice(-10).reverse().map(l=>(
-              <div key={l.id} className="table-row text-sm"><span>{l.emoji||"📌"}</span><span style={{flex:1}}>{l.message}</span><span className="text-muted">{new Date(l.createdAt).toLocaleString("ko-KR")}</span></div>
+            ?<div className="text-sm text-muted" style={{padding:16,textAlign:"center"}}>아직 활동이 없습니다</div>
+            :data.activityLog.slice(-8).reverse().map(l=>(
+              <div key={l.id} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:12}}>{l.emoji||"📌"}</span><span style={{flex:1,fontSize:12}}>{l.message}</span><span style={{fontSize:10,color:"var(--text-tertiary)",whiteSpace:"nowrap"}}>{new Date(l.createdAt).toLocaleString("ko-KR")}</span></div>
             ))
           }
         </div>
-        <div className="card" style={{flex:"1 1 300px"}}>
-          <div className="font-medium" style={{marginBottom:12}}>에이전트 현황</div>
+        <div className="card" style={{flex:"1 1 260px",padding:14}}>
+          <div className="font-medium" style={{marginBottom:8,fontSize:14}}>에이전트 현황</div>
           {data.agents.length===0
-            ?<div className="text-sm text-muted" style={{padding:20,textAlign:"center"}}>에이전트가 없습니다</div>
+            ?<div className="text-sm text-muted" style={{padding:16,textAlign:"center"}}>에이전트가 없습니다</div>
             :data.agents.map(a=>(
-              <div key={a.id} className="table-row"><span style={{fontSize:20}}>{a.icon||"🤖"}</span><div style={{flex:1}}><div className="text-sm font-medium">{a.name}</div><div className="text-sm text-muted">{a.title||a.role}</div></div><span className={"badge badge-"+a.status}>{a.status}</span></div>
+              <div key={a.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:16}}>{a.icon||"🤖"}</span><div style={{flex:1}}><div style={{fontSize:12,fontWeight:500}}>{a.name}</div></div><span className={"badge badge-"+a.status} style={{fontSize:10,padding:"0 5px"}}>{a.status}</span></div>
             ))
           }
         </div>
@@ -538,24 +573,24 @@ function AgentsPage({ data, onUpdate }) {
       </div>
       {show&&(
         <div className="card" style={{display:"flex",flexDirection:"column",gap:8}}>
-          <div style={{display:"flex",gap:8}}>
-            <input className="input" placeholder="이름 *" value={f.name} onChange={e=>setF({...f,name:e.target.value})} style={{flex:1}}/>
-            <input className="input" placeholder="직함" value={f.title} onChange={e=>setF({...f,title:e.target.value})} style={{flex:1}}/>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <input className="input" placeholder="이름 *" value={f.name} onChange={e=>setF({...f,name:e.target.value})} style={{flex:"1 1 140px"}}/>
+            <input className="input" placeholder="직함" value={f.title} onChange={e=>setF({...f,title:e.target.value})} style={{flex:"1 1 140px"}}/>
           </div>
-          <div style={{display:"flex",gap:8}}>
-            <select className="input" value={f.role} onChange={e=>setF({...f,role:e.target.value})} style={{flex:1}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <select className="input" value={f.role} onChange={e=>setF({...f,role:e.target.value})} style={{flex:"1 1 140px"}}>
               {["ceo","cto","cmo","coo","engineer","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
             </select>
-            <select className="input" value={f.model} onChange={e=>setF({...f,model:e.target.value})} style={{flex:1}}>
+            <select className="input" value={f.model} onChange={e=>setF({...f,model:e.target.value})} style={{flex:"1 1 140px"}}>
               <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
               <option value="claude-sonnet-4-5">Sonnet 4.5 — $3/$15</option>
               <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
             </select>
           </div>
-          <div style={{display:"flex",gap:8}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             <input className="input" placeholder="아이콘" value={f.icon} onChange={e=>setF({...f,icon:e.target.value})} style={{width:80}}/>
-            <div style={{flex:1,position:"relative"}}><input className="input" type="number" placeholder="월 예산(cents)" value={f.budget} onChange={e=>setF({...f,budget:e.target.value})} style={{width:"100%"}}/><div className="text-sm text-muted" style={{marginTop:2}}>{"= $" + (parseInt(f.budget||0) / 100).toFixed(2)}</div></div>
-            <select className="input" value={f.reportsTo} onChange={e=>setF({...f,reportsTo:e.target.value})} style={{flex:1}}>
+            <div style={{flex:"1 1 140px",position:"relative"}}><input className="input" type="number" placeholder="월 예산(cents)" value={f.budget} onChange={e=>setF({...f,budget:e.target.value})} style={{width:"100%"}}/><div className="text-sm text-muted" style={{marginTop:2}}>{"= $" + (parseInt(f.budget||0) / 100).toFixed(2)}</div></div>
+            <select className="input" value={f.reportsTo} onChange={e=>setF({...f,reportsTo:e.target.value})} style={{flex:"1 1 140px"}}>
               <option value="">보고 대상 없음</option>
               {data.agents.map(a=><option key={a.id} value={a.id}>{a.icon} {a.name}</option>)}
             </select>
@@ -564,33 +599,33 @@ function AgentsPage({ data, onUpdate }) {
           <button className="btn btn-primary" onClick={create}>에이전트 생성</button>
         </div>
       )}
-      <div className="card" style={{padding:0,overflow:"hidden"}}>
-        {data.agents.length===0
-          ?<div className="text-sm text-muted" style={{padding:40,textAlign:"center"}}>첫 번째 에이전트를 추가해보세요!</div>
-          :data.agents.map(a=>{
+      {data.agents.length===0
+        ?<div className="card text-sm text-muted" style={{padding:40,textAlign:"center"}}>첫 번째 에이전트를 추가해보세요!</div>
+        :<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:12}}>
+        {data.agents.map(a=>{
             const mi=MODELS[a.adapterConfig?a.adapterConfig.model:""]||{name:"?"};
             const mg=data.agents.find(x=>x.id===a.reportsTo);
             if(editId===a.id) return(
-              <div key={a.id} className="card" style={{margin:8,display:"flex",flexDirection:"column",gap:8,border:"2px solid var(--accent)"}}>
+              <div key={a.id} className="card" style={{display:"flex",flexDirection:"column",gap:8,border:"2px solid var(--accent)"}}>
                 <div className="text-sm font-medium" style={{color:"var(--accent)"}}>✏️ 에이전트 수정</div>
-                <div style={{display:"flex",gap:8}}>
-                  <input className="input" placeholder="이름" value={ef.name} onChange={e=>setEf({...ef,name:e.target.value})} style={{flex:1}}/>
-                  <input className="input" placeholder="직함" value={ef.title} onChange={e=>setEf({...ef,title:e.target.value})} style={{flex:1}}/>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  <input className="input" placeholder="이름" value={ef.name} onChange={e=>setEf({...ef,name:e.target.value})} style={{flex:"1 1 140px"}}/>
+                  <input className="input" placeholder="직함" value={ef.title} onChange={e=>setEf({...ef,title:e.target.value})} style={{flex:"1 1 140px"}}/>
                 </div>
-                <div style={{display:"flex",gap:8}}>
-                  <select className="input" value={ef.role} onChange={e=>setEf({...ef,role:e.target.value})} style={{flex:1}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  <select className="input" value={ef.role} onChange={e=>setEf({...ef,role:e.target.value})} style={{flex:"1 1 140px"}}>
                     {["ceo","cto","cmo","coo","engineer","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
                   </select>
-                  <select className="input" value={ef.model} onChange={e=>setEf({...ef,model:e.target.value})} style={{flex:1}}>
+                  <select className="input" value={ef.model} onChange={e=>setEf({...ef,model:e.target.value})} style={{flex:"1 1 140px"}}>
                     <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
                     <option value="claude-sonnet-4-5">Sonnet 4.5 — $3/$15</option>
                     <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
                   </select>
                 </div>
-                <div style={{display:"flex",gap:8}}>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   <input className="input" placeholder="아이콘" value={ef.icon} onChange={e=>setEf({...ef,icon:e.target.value})} style={{width:80}}/>
-                  <div style={{flex:1,position:"relative"}}><input className="input" type="number" placeholder="월 예산(cents)" value={ef.budget} onChange={e=>setEf({...ef,budget:e.target.value})} style={{width:"100%"}}/><div className="text-sm text-muted" style={{marginTop:2}}>{"= $" + (parseInt(ef.budget||0) / 100).toFixed(2)}</div></div>
-                  <select className="input" value={ef.reportsTo} onChange={e=>setEf({...ef,reportsTo:e.target.value})} style={{flex:1}}>
+                  <div style={{flex:"1 1 140px",position:"relative"}}><input className="input" type="number" placeholder="월 예산(cents)" value={ef.budget} onChange={e=>setEf({...ef,budget:e.target.value})} style={{width:"100%"}}/><div className="text-sm text-muted" style={{marginTop:2}}>{"= $" + (parseInt(ef.budget||0) / 100).toFixed(2)}</div></div>
+                  <select className="input" value={ef.reportsTo} onChange={e=>setEf({...ef,reportsTo:e.target.value})} style={{flex:"1 1 140px"}}>
                     <option value="">보고 대상 없음</option>
                     {data.agents.filter(x=>x.id!==a.id).map(x=><option key={x.id} value={x.id}>{x.icon} {x.name}</option>)}
                   </select>
@@ -603,19 +638,18 @@ function AgentsPage({ data, onUpdate }) {
               </div>
             );
             return(
-              <div key={a.id} className="table-row">
-                <span style={{fontSize:24}}>{a.icon||"🤖"}</span>
-                <div style={{flex:1,minWidth:0}}><div className="font-medium">{a.name}</div><div className="text-sm text-muted">{a.title||a.role}{mg?" · → "+mg.name:""}</div></div>
-                <span className="text-sm" style={{color:"var(--accent)"}}>{mi.name}</span>
-                <span className={"badge badge-"+a.status}>{a.status}</span>
-                <span className="text-sm text-muted">{"$"+(a.spentMonthlyCents/100).toFixed(2)+" / $"+(a.budgetMonthlyCents/100).toFixed(0)}</span>
-                <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={()=>startEdit(a)}>수정</button>
-                <button className="btn" style={{padding:"4px 8px",fontSize:12,color:"var(--danger)"}} onClick={()=>del(a.id)}>삭제</button>
+              <div key={a.id} className="card" style={{padding:"10px 12px",display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:18}}>{a.icon||"🤖"}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:13,fontWeight:600}}>{a.name}</span><span className={"badge badge-"+a.status} style={{fontSize:10,padding:"0px 5px"}}>{a.status}</span></div>
+                  <div style={{fontSize:11,color:"var(--text-secondary)"}}>{a.title||a.role}{mg?" · → "+mg.name:""} · <span style={{color:"var(--accent)"}}>{mi.name}</span> · {"$"+(a.spentMonthlyCents/100).toFixed(2)+"/$"+(a.budgetMonthlyCents/100).toFixed(0)}</div>
+                </div>
+                <button className="btn" style={{padding:"2px 6px",fontSize:10,border:"none",background:"none",color:"var(--accent)"}} onClick={()=>startEdit(a)}>✏️</button>
+                <button className="btn" style={{padding:"2px 6px",fontSize:10,border:"none",background:"none",color:"var(--danger)"}} onClick={()=>del(a.id)}>🗑️</button>
               </div>
             );
-          })
-        }
-      </div>
+          })}
+        </div>}
     </div>
   );
 }
@@ -948,20 +982,22 @@ function ActivityPage({ data }) {
   return (
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
       <div className="font-bold" style={{fontSize:18}}>📜 활동 로그 ({data.activityLog.length}건)</div>
-      <div className="card" style={{padding:0,overflow:"hidden"}}>
-        {logs.length === 0
-          ? <div className="text-sm text-muted" style={{padding:40,textAlign:"center"}}>아직 활동이 없습니다</div>
-          : logs.map(function(l) {
+      {logs.length === 0
+        ? <div className="card text-sm text-muted" style={{padding:40,textAlign:"center"}}>아직 활동이 없습니다</div>
+        : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:8}}>
+          {logs.map(function(l) {
             return (
-              <div key={l.id} className="table-row">
-                <span style={{fontSize:16}}>{l.emoji || "📌"}</span>
-                <span className="text-sm" style={{flex:1}}>{l.message}</span>
-                <span className="text-sm text-muted" style={{whiteSpace:"nowrap"}}>{new Date(l.createdAt).toLocaleString("ko-KR")}</span>
+              <div key={l.id} className="card" style={{padding:"8px 12px",display:"flex",alignItems:"flex-start",gap:8}}>
+                <span style={{fontSize:14,flexShrink:0}}>{l.emoji || "📌"}</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,lineHeight:1.4}}>{l.message}</div>
+                  <div style={{fontSize:10,color:"var(--text-tertiary)",marginTop:2}}>{new Date(l.createdAt).toLocaleString("ko-KR")}</div>
+                </div>
               </div>
             );
-          })
-        }
-      </div>
+          })}
+        </div>
+      }
     </div>
   );
 }
@@ -1311,12 +1347,12 @@ function SettingsPage({ data, onUpdate }) {
       <div className="card">
         <div className="font-medium" style={{marginBottom:16}}>회사 설정</div>
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <div style={{display:"flex",gap:12}}>
-            <div style={{flex:1}}>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+            <div style={{flex:"1 1 200px"}}>
               <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>회사 이름</label>
               <input className="input" value={companyName} onChange={function(e){setCompanyName(e.target.value)}}/>
             </div>
-            <div style={{flex:1}}>
+            <div style={{flex:"1 1 200px"}}>
               <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>월간 예산 (cents)</label>
               <input className="input" type="number" value={budget} onChange={function(e){setBudget(e.target.value)}}/>
               <div className="text-sm text-muted" style={{marginTop:4}}>{"= $" + (parseInt(budget||0) / 100).toFixed(2)}</div>
@@ -1326,7 +1362,7 @@ function SettingsPage({ data, onUpdate }) {
             <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>회사 설명</label>
             <input className="input" value={desc} onChange={function(e){setDesc(e.target.value)}}/>
           </div>
-          <div style={{display:"flex",gap:12,alignItems:"flex-end"}}>
+          <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}>
             <div>
               <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>브랜드 색상</label>
               <input type="color" value={brandColor} onChange={function(e){setBrandColor(e.target.value)}} style={{width:48,height:36,border:"1px solid var(--border)",borderRadius:"var(--radius)",cursor:"pointer"}}/>
@@ -1678,6 +1714,7 @@ function App() {
   const [data, setData] = useState(()=>load()||init());
   const [page, setPage] = useState("dashboard");
   const [authed, setAuthed] = useState(()=>sessionStorage.getItem(AUTH_KEY)==="1");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(()=>{save(data);},[data]);
 
@@ -1702,9 +1739,10 @@ function App() {
 
   return (
     <div className="app">
-      <SidebarNav data={data} activePage={page} onNav={setPage}/>
+      <SidebarNav data={data} activePage={page} onNav={setPage} mobileOpen={menuOpen} onClose={()=>setMenuOpen(false)}/>
       <div className="main">
         <div className="header">
+          <button className="mobile-menu-btn" onClick={()=>setMenuOpen(true)}>☰</button>
           <div className="font-medium">{co?co.name:"JWAY Digital"}</div>
           <div style={{flex:1}}/>
           <div className="text-sm text-muted">Board: JaeWoo</div>
