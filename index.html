@@ -234,16 +234,48 @@ function buildAgentPrompt(agent, issues, data) {
 function parseAgentResponse(text) {
   try {
     var jsonMatch = text.match(/```json\s*([\s\S]*?)```/);
-    if (jsonMatch) return JSON.parse(jsonMatch[1]);
+    if (jsonMatch) return { ...JSON.parse(jsonMatch[1]), _parseOk: true };
     var braceMatch = text.match(/\{[\s\S]*"actions"[\s\S]*\}/);
-    if (braceMatch) return JSON.parse(braceMatch[0]);
-    return { actions: [], summary: text.substring(0, 200) };
+    if (braceMatch) return { ...JSON.parse(braceMatch[0]), _parseOk: true };
+    return { actions: [], summary: text.substring(0, 200), _parseOk: false };
   } catch (e) {
-    return { actions: [], summary: text.substring(0, 200) };
+    return { actions: [], summary: text.substring(0, 200), _parseOk: false };
   }
 }
 
-async function executeHeartbeat(agent, data, onUpdate) {
+// Harness: 에이전트 출력 검증
+function validateActions(actions, issues) {
+  var validActions = [];
+  var violations = [];
+  var validStatuses = ["start", "complete", "comment"];
+  (actions || []).forEach(function(act) {
+    if (!act.issueId || !act.action) {
+      violations.push("액션에 issueId 또는 action이 누락됨");
+      return;
+    }
+    if (validStatuses.indexOf(act.action) === -1) {
+      violations.push("허용되지 않는 action: " + act.action + " (허용: start, complete, comment)");
+      return;
+    }
+    var issue = issues.find(function(i) { return i.id === act.issueId || i.identifier === act.issueId; });
+    if (!issue) {
+      violations.push("존재하지 않는 이슈 참조: " + act.issueId);
+      return;
+    }
+    if (act.action === "start" && issue.status === "done") {
+      violations.push(act.issueId + ": 완료된 이슈를 다시 시작할 수 없음");
+      return;
+    }
+    if (act.action === "complete" && issue.status === "done") {
+      violations.push(act.issueId + ": 이미 완료된 이슈");
+      return;
+    }
+    validActions.push(act);
+  });
+  return { validActions: validActions, violations: violations };
+}
+
+async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
   var company = data.companies[0];
   if (!company || !data.settings.apiKey) return null;
 
@@ -257,10 +289,21 @@ async function executeHeartbeat(agent, data, onUpdate) {
   if (!systemPrompt) {
     systemPrompt = "당신은 AI 에이전트 회사의 " + (agent.title || agent.role) + "입니다. 주어진 업무를 성실히 수행하세요. 한국어로 응답하세요.";
   }
+  if (data.settings.globalPrompt) {
+    systemPrompt += "\n\n[전사 공통 지시]\n" + data.settings.globalPrompt;
+  }
+  if (runPrompt) {
+    systemPrompt += "\n\n[이번 실행 지시]\n" + runPrompt;
+  }
 
   var userMessage = buildAgentPrompt(agent, data.issues, data);
   var runId = uid();
   var startTime = now();
+  var MAX_ATTEMPTS = 3;
+  var totalCostCents = 0;
+  var totalInputTokens = 0;
+  var totalOutputTokens = 0;
+  var allLogs = [];
 
   try {
     // Update agent status to working
@@ -270,24 +313,62 @@ async function executeHeartbeat(agent, data, onUpdate) {
     var tempData = { ...data, agents: updatedAgents };
     onUpdate(tempData);
 
-    var response = await callClaudeAPI(data.settings.apiKey, model, systemPrompt, userMessage, (agent.adapterConfig && agent.adapterConfig.maxTokens) || 2048);
+    var finalParsed = null;
+    var finalResponseText = "";
+    var attemptCount = 0;
+    var currentMessage = userMessage;
 
-    var responseText = response.content.map(function(c) { return c.text || ""; }).join("\n");
-    var usage = response.usage || {};
-    var costCents = calcCostCents(model, usage);
-    var parsed = parseAgentResponse(responseText);
+    // ===== HARNESS LOOP: 실행 → 검증 → 재시도 =====
+    while (attemptCount < MAX_ATTEMPTS) {
+      attemptCount++;
 
-    // Apply actions to issues
+      var response = await callClaudeAPI(data.settings.apiKey, model, systemPrompt, currentMessage, (agent.adapterConfig && agent.adapterConfig.maxTokens) || 2048);
+      var responseText = response.content.map(function(c) { return c.text || ""; }).join("\n");
+      var usage = response.usage || {};
+      var costCents = calcCostCents(model, usage);
+      totalCostCents += costCents;
+      totalInputTokens += (usage.input_tokens || 0);
+      totalOutputTokens += (usage.output_tokens || 0);
+      finalResponseText = responseText;
+
+      // GATE 1: JSON 파싱 검증
+      var parsed = parseAgentResponse(responseText);
+      if (!parsed._parseOk && parsed.actions.length === 0) {
+        if (attemptCount < MAX_ATTEMPTS) {
+          allLogs.push({ id: uid(), emoji: "🔄", message: agent.icon + " " + agent.name + " [하네스] 응답 파싱 실패, 재시도 " + attemptCount + "/" + MAX_ATTEMPTS, createdAt: now() });
+          currentMessage = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 다음 형식으로 응답하세요:\n```json\n{\"actions\": [{\"issueId\": \"이슈ID\", \"action\": \"start|complete|comment\", \"comment\": \"설명\"}], \"summary\": \"요약\"}\n```\n\n" + userMessage;
+          continue;
+        }
+        allLogs.push({ id: uid(), emoji: "⚠️", message: agent.icon + " " + agent.name + " [하네스] 파싱 실패 " + MAX_ATTEMPTS + "회 — 원본 응답 저장", createdAt: now() });
+        finalParsed = parsed;
+        break;
+      }
+
+      // GATE 2: 액션 유효성 검증
+      var validation = validateActions(parsed.actions, tempData.issues);
+      if (validation.violations.length > 0) {
+        allLogs.push({ id: uid(), emoji: "🛡️", message: agent.icon + " " + agent.name + " [하네스] 검증 위반 " + validation.violations.length + "건 차단: " + validation.violations.join(", ").substring(0, 100), createdAt: now() });
+      }
+
+      // 유효한 액션만 적용
+      parsed.actions = validation.validActions;
+      finalParsed = parsed;
+      break;
+    }
+
+    if (!finalParsed) finalParsed = { actions: [], summary: "" };
+
+    // Apply validated actions to issues
     var updatedIssues = [...tempData.issues];
-    var logs = [];
-    if (parsed.actions && parsed.actions.length > 0) {
-      parsed.actions.forEach(function(act) {
+    var actionLogs = [];
+    if (finalParsed.actions && finalParsed.actions.length > 0) {
+      finalParsed.actions.forEach(function(act) {
         updatedIssues = updatedIssues.map(function(issue) {
           if (issue.id === act.issueId || issue.identifier === act.issueId) {
             var changes = { updatedAt: now() };
             if (act.action === "start") { changes.status = "in_progress"; changes.startedAt = now(); }
             else if (act.action === "complete") { changes.status = "done"; changes.completedAt = now(); }
-            logs.push({ id: uid(), emoji: act.action === "complete" ? "✅" : "🔄", message: agent.icon + " " + agent.name + ": " + (issue.identifier || "") + " → " + (act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : "코멘트") + (act.comment ? " — " + act.comment.substring(0, 80) : ""), createdAt: now() });
+            actionLogs.push({ id: uid(), emoji: act.action === "complete" ? "✅" : "🔄", message: agent.icon + " " + agent.name + ": " + (issue.identifier || "") + " → " + (act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : "코멘트") + (act.comment ? " — " + act.comment.substring(0, 80) : ""), createdAt: now() });
             return { ...issue, ...changes };
           }
           return issue;
@@ -295,32 +376,34 @@ async function executeHeartbeat(agent, data, onUpdate) {
       });
     }
 
-    // Record cost event
+    // Record cost event (total across all attempts)
     var costEvent = {
       id: uid(), companyId: company.id, agentId: agent.id, provider: "anthropic",
-      model: model, inputTokens: usage.input_tokens || 0,
-      cachedInputTokens: usage.cache_read_input_tokens || 0,
-      outputTokens: usage.output_tokens || 0, costCents: costCents, occurredAt: now(), createdAt: now(),
+      model: model, inputTokens: totalInputTokens,
+      cachedInputTokens: 0,
+      outputTokens: totalOutputTokens, costCents: totalCostCents, occurredAt: now(), createdAt: now(),
     };
 
     // Record heartbeat run
     var hbRun = {
       id: runId, companyId: company.id, agentId: agent.id, model: model,
-      status: "completed", inputTokens: usage.input_tokens || 0,
-      outputTokens: usage.output_tokens || 0, costCents: costCents,
-      summary: parsed.summary || "", responseExcerpt: responseText.substring(0, 500),
+      status: "completed", inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens, costCents: totalCostCents,
+      attempts: attemptCount,
+      summary: finalParsed.summary || "", responseExcerpt: finalResponseText.substring(0, 500),
       startedAt: startTime, completedAt: now(),
     };
 
     // Update agent spent + status back to idle
     var finalAgents = tempData.agents.map(function(a) {
       if (a.id === agent.id) {
-        return { ...a, status: "idle", spentMonthlyCents: a.spentMonthlyCents + costCents, lastHeartbeatAt: now(), updatedAt: now() };
+        return { ...a, status: "idle", spentMonthlyCents: a.spentMonthlyCents + totalCostCents, lastHeartbeatAt: now(), updatedAt: now() };
       }
       return a;
     });
 
-    logs.push({ id: uid(), emoji: "💓", message: agent.icon + " " + agent.name + " heartbeat 완료 — " + (usage.input_tokens || 0) + "+" + (usage.output_tokens || 0) + " tokens, $" + (costCents / 100).toFixed(2), createdAt: now() });
+    var attemptNote = attemptCount > 1 ? " (" + attemptCount + "회 시도)" : "";
+    actionLogs.push({ id: uid(), emoji: "💓", message: agent.icon + " " + agent.name + " heartbeat 완료" + attemptNote + " — " + totalInputTokens + "+" + totalOutputTokens + " tokens, $" + (totalCostCents / 100).toFixed(2), createdAt: now() });
 
     var finalData = {
       ...tempData,
@@ -328,10 +411,10 @@ async function executeHeartbeat(agent, data, onUpdate) {
       issues: updatedIssues,
       costEvents: [...tempData.costEvents, costEvent],
       heartbeatRuns: [...tempData.heartbeatRuns, hbRun],
-      activityLog: [...tempData.activityLog, ...logs],
+      activityLog: [...tempData.activityLog, ...allLogs, ...actionLogs],
     };
     onUpdate(finalData);
-    return { success: true, run: hbRun, costCents: costCents };
+    return { success: true, run: hbRun, costCents: totalCostCents, attempts: attemptCount };
 
   } catch (err) {
     // Set agent to error
@@ -339,8 +422,8 @@ async function executeHeartbeat(agent, data, onUpdate) {
       return a.id === agent.id ? { ...a, status: "error", updatedAt: now() } : a;
     });
     var errLog = { id: uid(), emoji: "❌", message: agent.icon + " " + agent.name + " heartbeat 실패: " + err.message.substring(0, 100), createdAt: now() };
-    var errRun = { id: runId, companyId: company.id, agentId: agent.id, model: model, status: "error", error: err.message, startedAt: startTime, completedAt: now(), costCents: 0 };
-    onUpdate({ ...data, agents: errAgents, heartbeatRuns: [...data.heartbeatRuns, errRun], activityLog: [...data.activityLog, errLog] });
+    var errRun = { id: runId, companyId: company.id, agentId: agent.id, model: model, status: "error", error: err.message, startedAt: startTime, completedAt: now(), costCents: totalCostCents, attempts: attemptCount || 0 };
+    onUpdate({ ...data, agents: errAgents, heartbeatRuns: [...data.heartbeatRuns, errRun], activityLog: [...data.activityLog, ...allLogs, errLog] });
     return { success: false, error: err.message };
   }
 }
@@ -455,6 +538,7 @@ function SidebarNav({ data, activePage, onNav, mobileOpen, onClose }) {
   const items = [
     {id:"dashboard",icon:"📊",label:"대시보드"},
     {id:"agents",icon:"👥",label:"에이전트",badge:wa||null},
+    {id:"orgchart",icon:"🏛️",label:"조직도"},
     {id:"issues",icon:"📋",label:"이슈"},
     {id:"projects",icon:"📁",label:"프로젝트"},
     {id:"goals",icon:"🎯",label:"목표"},
@@ -835,6 +919,7 @@ function HeartbeatPage({ data, onUpdate }) {
   const [running, setRunning] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const [autoMode, setAutoMode] = useState(false);
+  const [runPrompt, setRunPrompt] = useState("");
   const autoRef = React.useRef(null);
 
   const activeAgents = data.agents.filter(function(a) { return a.status !== "paused"; });
@@ -845,7 +930,7 @@ function HeartbeatPage({ data, onUpdate }) {
     setLastResult(null);
     var freshData = load() || data;
     var freshAgent = freshData.agents.find(function(a) { return a.id === agent.id; }) || agent;
-    var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); });
+    var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); }, runPrompt);
     setLastResult(result);
     setRunning(null);
   };
@@ -855,7 +940,7 @@ function HeartbeatPage({ data, onUpdate }) {
       setRunning(activeAgents[i].id);
       var freshData = load() || data;
       var freshAgent = freshData.agents.find(function(a) { return a.id === activeAgents[i].id; }) || activeAgents[i];
-      var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); });
+      var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); }, runPrompt);
       setLastResult(result);
     }
     setRunning(null);
@@ -900,6 +985,12 @@ function HeartbeatPage({ data, onUpdate }) {
             {running ? "⏳ 실행 중..." : "🔄 전체 Heartbeat"}
           </button>
         </div>
+      </div>
+
+      <div className="card" style={{padding:14}}>
+        <div className="font-medium" style={{marginBottom:8,fontSize:14}}>📝 이번 실행 지시사항</div>
+        <textarea className="input" placeholder="이번 Heartbeat에만 적용할 지시사항 (예: '이슈 우선순위를 재검토해줘', '진행 상황을 상세히 보고해줘')" value={runPrompt} onChange={function(e){setRunPrompt(e.target.value)}} rows={2} style={{resize:"vertical",fontSize:13}}/>
+        <div className="text-sm text-muted" style={{marginTop:4}}>비워두면 기본 동작으로 실행됩니다</div>
       </div>
 
       <div className="card">
@@ -967,6 +1058,7 @@ function HeartbeatPage({ data, onUpdate }) {
                   <span className="text-sm font-medium">{agent ? agent.name : "?"}</span>
                   <span className={"badge badge-" + (run.status === "completed" ? "done" : "error")}>{run.status}</span>
                   {run.costCents > 0 && <span className="cost-pill">{"$" + (run.costCents / 100).toFixed(3)}</span>}
+                  {run.attempts > 1 && <span className="badge" style={{fontSize:10,background:"var(--warning-light)",color:"var(--warning)"}}>{run.attempts + "회 시도"}</span>}
                   {run.inputTokens > 0 && <span className="token-pill">{run.inputTokens + "+" + (run.outputTokens || 0)}</span>}
                   <span className="text-sm text-muted" style={{marginLeft:"auto"}}>{new Date(run.startedAt).toLocaleString("ko-KR")}</span>
                 </div>
@@ -977,6 +1069,79 @@ function HeartbeatPage({ data, onUpdate }) {
           })
         }
       </div>
+    </div>
+  );
+}
+
+function OrgChartPage({ data }) {
+  var co = data.companies[0];
+  var agents = data.agents;
+  var roots = agents.filter(function(a) { return !a.reportsTo || !agents.find(function(x) { return x.id === a.reportsTo; }); });
+
+  function renderNode(agent, depth) {
+    var children = agents.filter(function(a) { return a.reportsTo === agent.id; });
+    var mi = MODELS[agent.adapterConfig ? agent.adapterConfig.model : ""] || { name: "?" };
+    var isLeaf = children.length === 0;
+    return (
+      <div key={agent.id} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+        <div style={{background:"var(--bg-primary)",border:"2px solid "+(agent.status==="working"?"var(--info)":agent.status==="error"?"var(--danger)":"var(--border)"),borderRadius:12,padding:"12px 16px",textAlign:"center",minWidth:120,position:"relative",boxShadow:"0 2px 8px rgba(0,0,0,0.06)"}}>
+          <div style={{fontSize:28}}>{agent.icon||"🤖"}</div>
+          <div style={{fontSize:13,fontWeight:600,marginTop:4}}>{agent.name}</div>
+          <div style={{fontSize:11,color:"var(--text-secondary)"}}>{agent.title||agent.role}</div>
+          <div style={{display:"flex",gap:4,justifyContent:"center",marginTop:6}}>
+            <span className={"badge badge-"+agent.status} style={{fontSize:10,padding:"0 5px"}}>{agent.status}</span>
+            <span style={{fontSize:10,color:"var(--accent)",background:"var(--accent-light)",padding:"0 5px",borderRadius:4}}>{mi.name}</span>
+          </div>
+        </div>
+        {children.length > 0 && (
+          <React.Fragment>
+            <div style={{width:2,height:16,background:"var(--border)"}}/>
+            {children.length > 1 && <div style={{height:2,background:"var(--border)",width:Math.max(children.length*140-40,100),alignSelf:"center"}}/>}
+            <div style={{display:"flex",gap:24,justifyContent:"center"}}>
+              {children.map(function(c) {
+                return (
+                  <div key={c.id} style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+                    <div style={{width:2,height:16,background:"var(--border)"}}/>
+                    {renderNode(c, depth+1)}
+                  </div>
+                );
+              })}
+            </div>
+          </React.Fragment>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div className="font-bold" style={{fontSize:18}}>🏛️ 조직도</div>
+      {co && (
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,overflowX:"auto",padding:"16px 0"}}>
+          <div style={{background:"var(--accent)",color:"white",borderRadius:12,padding:"12px 20px",textAlign:"center",minWidth:140,boxShadow:"0 2px 8px rgba(99,102,241,0.2)"}}>
+            <div style={{fontSize:24}}>🏢</div>
+            <div style={{fontSize:14,fontWeight:700,marginTop:4}}>{co.name}</div>
+            <div style={{fontSize:11,opacity:0.8}}>{data.agents.length}명의 에이전트</div>
+          </div>
+          {roots.length > 0 && (
+            <React.Fragment>
+              <div style={{width:2,height:20,background:"var(--border)"}}/>
+              {roots.length > 1 && <div style={{height:2,background:"var(--border)",width:Math.max(roots.length*140-40,100)}}/>}
+              <div style={{display:"flex",gap:24,justifyContent:"center"}}>
+                {roots.map(function(r) {
+                  return (
+                    <div key={r.id} style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+                      <div style={{width:2,height:16,background:"var(--border)"}}/>
+                      {renderNode(r, 0)}
+                    </div>
+                  );
+                })}
+              </div>
+            </React.Fragment>
+          )}
+          {agents.length === 0 && <div className="card text-sm text-muted" style={{padding:40,textAlign:"center",marginTop:16}}>에이전트를 추가하면 조직도가 표시됩니다</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1252,10 +1417,11 @@ function SettingsPage({ data, onUpdate }) {
   const [budget, setBudget] = useState(co ? co.budgetMonthlyCents : 10000);
   const [desc, setDesc] = useState(co ? co.description : "");
   const [brandColor, setBrandColor] = useState(co ? co.brandColor : "#6366f1");
+  const [globalPrompt, setGlobalPrompt] = useState(data.settings.globalPrompt || "");
   const [saved, setSaved] = useState(false);
 
   const saveSettings = () => {
-    var updatedSettings = { ...data.settings, apiKey: apiKey.trim(), companyName: companyName };
+    var updatedSettings = { ...data.settings, apiKey: apiKey.trim(), companyName: companyName, globalPrompt: globalPrompt };
     var updatedCompanies = data.companies.map(function(c) {
       return c.id === co.id ? { ...c, name: companyName, description: desc, budgetMonthlyCents: parseInt(budget) || 10000, brandColor: brandColor } : c;
     });
@@ -1365,6 +1531,11 @@ function SettingsPage({ data, onUpdate }) {
           <div>
             <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>회사 설명</label>
             <input className="input" value={desc} onChange={function(e){setDesc(e.target.value)}}/>
+          </div>
+          <div>
+            <label className="text-sm font-medium" style={{display:"block",marginBottom:4}}>전사 공통 프롬프트</label>
+            <textarea className="input" placeholder="모든 에이전트에게 공통으로 적용할 지시사항 (예: '한국어로 간결하게 응답', '코드 리뷰 시 보안 우선')" value={globalPrompt} onChange={function(e){setGlobalPrompt(e.target.value)}} rows={3} style={{resize:"vertical"}}/>
+            <div className="text-sm text-muted" style={{marginTop:4}}>Heartbeat 실행 시 모든 에이전트의 시스템 프롬프트에 추가됩니다</div>
           </div>
           <div style={{display:"flex",gap:12,alignItems:"flex-end",flexWrap:"wrap"}}>
             <div>
@@ -1731,6 +1902,7 @@ function App() {
   const pages = {
     dashboard: <DashboardPage data={data} onUpdate={setData}/>,
     agents: <AgentsPage data={data} onUpdate={setData}/>,
+    orgchart: <OrgChartPage data={data}/>,
     issues: <IssuesPage data={data} onUpdate={setData}/>,
     projects: <ProjectsPage data={data} onUpdate={setData}/>,
     goals: <GoalsPage data={data} onUpdate={setData}/>,
