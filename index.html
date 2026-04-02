@@ -607,9 +607,23 @@ function DashboardPage({ data }) {
   );
 }
 
+const ROLE_CAPS = {
+  ceo:"경영 전략, 의사결정, 비전 수립, 팀 리더십",
+  cto:"기술 전략, 아키텍처 설계, 기술 스택 결정, 코드 리뷰",
+  cmo:"마케팅 전략, 브랜딩, 캠페인 기획, 시장 분석",
+  coo:"운영 관리, 프로세스 최적화, 팀 조율, KPI 관리",
+  pm:"프로젝트 관리, 일정 조율, 이슈 우선순위 결정, 팀 커뮤니케이션",
+  engineer:"코드 개발, API 설계, 버그 수정, 테스트 작성",
+  marketer:"콘텐츠 마케팅, SNS 운영, 그로스 해킹, 데이터 분석",
+  analyst:"데이터 분석, 시장 조사, 보고서 작성, 인사이트 도출",
+  writer:"기술 문서 작성, 블로그 포스팅, 카피라이팅, 에디팅",
+  designer:"UI/UX 디자인, 프로토타이핑, 디자인 시스템, 사용자 리서치",
+  general:"다목적 업무 지원, 리서치, 보고서 작성, 일정 관리",
+};
+
 function AgentsPage({ data, onUpdate }) {
   const [show, setShow] = useState(false);
-  const blank = {name:"",role:"engineer",title:"",icon:"🤖",model:"claude-haiku-4-5-20251001",budget:2000,caps:"",reportsTo:""};
+  const blank = {name:"",role:"engineer",title:"",icon:"🤖",model:"claude-haiku-4-5-20251001",budget:2000,caps:ROLE_CAPS["engineer"]||"",reportsTo:""};
   const [f, setF] = useState({...blank});
 
   const create = () => {
@@ -662,8 +676,8 @@ function AgentsPage({ data, onUpdate }) {
             <input className="input" placeholder="직함" value={f.title} onChange={e=>setF({...f,title:e.target.value})} style={{flex:"1 1 140px"}}/>
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <select className="input" value={f.role} onChange={e=>setF({...f,role:e.target.value})} style={{flex:"1 1 140px"}}>
-              {["ceo","cto","cmo","coo","engineer","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
+            <select className="input" value={f.role} onChange={e=>{var r=e.target.value;setF({...f,role:r,caps:f.caps&&f.caps!==(ROLE_CAPS[f.role]||"")?f.caps:(ROLE_CAPS[r]||"")})}} style={{flex:"1 1 140px"}}>
+              {["ceo","cto","cmo","coo","pm","engineer","analyst","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
             </select>
             <select className="input" value={f.model} onChange={e=>setF({...f,model:e.target.value})} style={{flex:"1 1 140px"}}>
               <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
@@ -697,8 +711,8 @@ function AgentsPage({ data, onUpdate }) {
                   <input className="input" placeholder="직함" value={ef.title} onChange={e=>setEf({...ef,title:e.target.value})} style={{flex:"1 1 140px"}}/>
                 </div>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  <select className="input" value={ef.role} onChange={e=>setEf({...ef,role:e.target.value})} style={{flex:"1 1 140px"}}>
-                    {["ceo","cto","cmo","coo","engineer","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
+                  <select className="input" value={ef.role} onChange={e=>{var r=e.target.value;setEf({...ef,role:r,caps:ef.caps&&ef.caps!==(ROLE_CAPS[ef.role]||"")?ef.caps:(ROLE_CAPS[r]||"")})}} style={{flex:"1 1 140px"}}>
+                    {["ceo","cto","cmo","coo","pm","engineer","analyst","marketer","writer","designer","general"].map(r=><option key={r} value={r}>{r.toUpperCase()}</option>)}
                   </select>
                   <select className="input" value={ef.model} onChange={e=>setEf({...ef,model:e.target.value})} style={{flex:"1 1 140px"}}>
                     <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
