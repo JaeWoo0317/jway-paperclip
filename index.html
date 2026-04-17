@@ -8,6 +8,7 @@
   <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.26.9/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     :root {
       --bg-primary:#ffffff;--bg-secondary:#f8f9fa;--bg-tertiary:#f1f3f5;
@@ -956,6 +957,7 @@ function SidebarNav({ data, activePage, onNav, mobileOpen, onClose }) {
     {id:"approvals",icon:"🛡️",label:"승인",badge:pa||null},
     {id:"costs",icon:"💰",label:"비용"},
     {id:"conversations",icon:"💬",label:"대화"},
+    {id:"artifacts",icon:"📎",label:"아티팩트"},
     {id:"routines",icon:"💓",label:"Heartbeat"},
     {id:"activity",icon:"📜",label:"활동 로그"},
     {id:"settings",icon:"⚙️",label:"설정"},
@@ -2413,6 +2415,64 @@ function previewHtmlArtifact(a) {
   var w = window.open(url, "_blank", "width=1200,height=800");
   if (!w) { alert("팝업이 차단되었습니다. 브라우저에서 팝업 허용 후 다시 시도하거나 다운로드를 이용하세요."); }
 }
+// 같은 이슈 내 같은 title을 가진 아티팩트들의 버전 정보 계산
+function getArtifactVersions(issue, artifact) {
+  if (!issue || !issue.artifacts) return { version: 1, total: 1, all: [artifact] };
+  var sameTitle = issue.artifacts.filter(function(a) { return a.title === artifact.title; });
+  sameTitle.sort(function(a, b) { return a.createdAt < b.createdAt ? -1 : 1; });
+  var version = sameTitle.findIndex(function(a) { return a.id === artifact.id; }) + 1;
+  return { version: version, total: sameTitle.length, all: sameTitle };
+}
+
+async function exportArtifactsZip(artifacts, zipName) {
+  if (typeof JSZip === "undefined") {
+    alert("JSZip 라이브러리 로딩 실패. 페이지를 새로고침해 주세요.");
+    return;
+  }
+  if (!artifacts || artifacts.length === 0) {
+    alert("내보낼 아티팩트가 없습니다.");
+    return;
+  }
+  var zip = new JSZip();
+  // 이슈별 폴더로 구성
+  var usedNames = {};
+  artifacts.forEach(function(a) {
+    var folder = a.issueIdentifier ? a.issueIdentifier + "_" + (a.issueTitle || "").substring(0, 30).replace(/[<>:"/\\|?*]/g, "_") : "misc";
+    var filename = a.title || ("artifact_" + a.id);
+    var path = folder + "/" + filename;
+    // 중복 방지
+    if (usedNames[path]) {
+      var parts = filename.split(".");
+      var ext = parts.length > 1 ? "." + parts.pop() : "";
+      var base = parts.join(".");
+      var n = 2;
+      while (usedNames[folder + "/" + base + "_" + n + ext]) n++;
+      path = folder + "/" + base + "_" + n + ext;
+    }
+    usedNames[path] = true;
+    zip.file(path, a.content);
+  });
+  // README 추가
+  var readme = "# JWAY Paperclip 아티팩트 Export\n\n";
+  readme += "- 내보내기 시간: " + new Date().toLocaleString("ko-KR") + "\n";
+  readme += "- 파일 수: " + artifacts.length + "\n";
+  readme += "- 총 크기: " + (artifacts.reduce(function(s,a){return s+a.content.length},0) / 1024).toFixed(1) + " KB\n\n";
+  readme += "## 파일 목록\n\n";
+  artifacts.forEach(function(a) {
+    readme += "- `" + (a.issueIdentifier || "") + "/" + a.title + "` - " + (a.description || "") + " (by " + a.agentName + ")\n";
+  });
+  zip.file("README.md", readme);
+
+  var blob = await zip.generateAsync({ type: "blob" });
+  var url = URL.createObjectURL(blob);
+  var el = document.createElement("a");
+  el.href = url;
+  el.download = zipName || "jway-paperclip-artifacts.zip";
+  document.body.appendChild(el);
+  el.click();
+  document.body.removeChild(el);
+  URL.revokeObjectURL(url);
+}
 // 간단한 마크다운 렌더러 (미리보기용, 완벽하지 않음)
 function renderMarkdownLite(md) {
   var esc = function(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); };
@@ -2599,6 +2659,187 @@ function ConversationsPage({ data }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ========== Artifacts Page ==========
+function ArtifactsPage({ data }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
+  const [selectedArtifact, setSelectedArtifact] = useState(null);
+
+  // 모든 아티팩트 수집 + 이슈 정보 첨부
+  var allArtifacts = [];
+  data.issues.forEach(function(issue) {
+    (issue.artifacts || []).forEach(function(a) {
+      allArtifacts.push({
+        ...a,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        issueTitle: issue.title,
+        issueStatus: issue.status,
+      });
+    });
+  });
+  allArtifacts.sort(function(a, b) { return a.createdAt < b.createdAt ? 1 : -1; });
+
+  // 필터링
+  var filtered = allArtifacts;
+  if (searchQuery) {
+    var q = searchQuery.toLowerCase();
+    filtered = filtered.filter(function(a) {
+      return (a.title || "").toLowerCase().includes(q)
+          || (a.description || "").toLowerCase().includes(q)
+          || (a.content || "").toLowerCase().includes(q)
+          || (a.issueIdentifier || "").toLowerCase().includes(q)
+          || (a.issueTitle || "").toLowerCase().includes(q);
+    });
+  }
+  if (typeFilter) filtered = filtered.filter(function(a) { return a.type === typeFilter; });
+  if (agentFilter) filtered = filtered.filter(function(a) { return a.agentId === agentFilter; });
+
+  // 타입별 카운트
+  var typeCounts = {};
+  allArtifacts.forEach(function(a) { typeCounts[a.type] = (typeCounts[a.type] || 0) + 1; });
+
+  // 에이전트별 카운트
+  var agentCounts = {};
+  allArtifacts.forEach(function(a) { agentCounts[a.agentId] = (agentCounts[a.agentId] || 0) + 1; });
+
+  var totalChars = allArtifacts.reduce(function(s, a) { return s + (a.content ? a.content.length : 0); }, 0);
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <div>
+          <div className="font-bold" style={{fontSize:18}}>📎 아티팩트 ({allArtifacts.length})</div>
+          <div className="text-sm text-muted">{"총 " + (totalChars/1000).toFixed(1) + "K자 · 에이전트가 생성한 실제 결과물 파일"}</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn btn-primary" style={{fontSize:12}} disabled={filtered.length===0} onClick={async function(){
+            var project = data.projects[0];
+            var zipName = "jway-" + (project ? project.name.replace(/[^\w가-힣]/g,"_") : "artifacts") + "-" + new Date().toISOString().slice(0,10) + ".zip";
+            await exportArtifactsZip(filtered, zipName);
+          }}>📦 {filtered.length===allArtifacts.length?"전체":"필터"} ZIP 내보내기 ({filtered.length})</button>
+        </div>
+      </div>
+
+      {/* 검색 + 필터 */}
+      <div className="card" style={{padding:14,display:"flex",flexDirection:"column",gap:10}}>
+        <input className="input" placeholder="🔍 제목, 설명, 내용, 이슈에서 검색..." value={searchQuery} onChange={function(e){setSearchQuery(e.target.value)}} style={{fontSize:14}}/>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <span className="text-sm text-muted">타입:</span>
+          <button className="btn" style={{padding:"4px 10px",fontSize:11,background:typeFilter===""?"var(--accent)":"",color:typeFilter===""?"white":""}} onClick={function(){setTypeFilter("")}}>전체</button>
+          {Object.keys(typeCounts).sort().map(function(t) {
+            return <button key={t} className="btn" style={{padding:"4px 10px",fontSize:11,background:typeFilter===t?"var(--accent)":"",color:typeFilter===t?"white":""}} onClick={function(){setTypeFilter(typeFilter===t?"":t)}}>{artifactEmoji(t) + " " + t + " (" + typeCounts[t] + ")"}</button>;
+          })}
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <span className="text-sm text-muted">작성자:</span>
+          <button className="btn" style={{padding:"4px 10px",fontSize:11,background:agentFilter===""?"var(--accent)":"",color:agentFilter===""?"white":""}} onClick={function(){setAgentFilter("")}}>전체</button>
+          {Object.keys(agentCounts).map(function(aid) {
+            var a = data.agents.find(function(x){return x.id===aid});
+            if (!a) return null;
+            return <button key={aid} className="btn" style={{padding:"4px 10px",fontSize:11,background:agentFilter===aid?"var(--accent)":"",color:agentFilter===aid?"white":""}} onClick={function(){setAgentFilter(agentFilter===aid?"":aid)}}>{a.icon + " " + a.name + " (" + agentCounts[aid] + ")"}</button>;
+          })}
+        </div>
+        <div className="text-sm text-muted" style={{marginTop:4}}>{"결과: " + filtered.length + " / " + allArtifacts.length + "개"}</div>
+      </div>
+
+      {/* 아티팩트 목록 */}
+      {filtered.length === 0 ? (
+        <div className="card" style={{padding:40,textAlign:"center"}}>
+          <div style={{fontSize:40,marginBottom:8}}>📎</div>
+          <div className="text-sm text-muted">{allArtifacts.length === 0 ? "아직 아티팩트가 없습니다. 협업 Heartbeat에서 에이전트에게 artifact 생성을 요청해보세요!" : "검색 결과가 없습니다"}</div>
+        </div>
+      ) : (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:12}}>
+          {filtered.map(function(a) {
+            var agent = data.agents.find(function(ag){return ag.id===a.agentId});
+            var issue = data.issues.find(function(i){return i.id===a.issueId});
+            var versionInfo = getArtifactVersions(issue, a);
+            return (
+              <div key={a.id} className="card" style={{padding:14,display:"flex",flexDirection:"column",gap:8,borderLeft:"3px solid var(--success)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:18}}>{artifactEmoji(a.type)}</span>
+                  <span className="font-medium text-sm" style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={a.title}>{a.title}</span>
+                  {versionInfo.total > 1 && <span className="badge" style={{fontSize:9,background:"var(--warning-light)",color:"var(--warning)"}}>{"v"+versionInfo.version+"/"+versionInfo.total}</span>}
+                  <span className="badge" style={{fontSize:9,background:"var(--bg-secondary)"}}>{a.type}</span>
+                </div>
+                {a.description && <div className="text-sm text-muted" style={{fontSize:12}}>{a.description}</div>}
+                <div className="text-sm" style={{fontSize:11,color:"var(--text-tertiary)"}}>
+                  <div>{"📋 " + a.issueIdentifier + " — " + a.issueTitle.substring(0, 30) + (a.issueTitle.length>30?"...":"")}</div>
+                  <div>{"👤 " + (agent ? (agent.icon + " " + agent.name) : a.agentName) + " · " + new Date(a.createdAt).toLocaleString("ko-KR")}</div>
+                  <div>{"📏 " + a.content.length.toLocaleString() + "자"}</div>
+                </div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  <button className="btn btn-primary" style={{padding:"4px 10px",fontSize:11}} onClick={function(){downloadArtifact(a)}}>⬇ 다운로드</button>
+                  {a.type === "html" && <button className="btn" style={{padding:"4px 10px",fontSize:11}} onClick={function(){previewHtmlArtifact(a)}}>🔍 HTML</button>}
+                  {a.type === "markdown" && <button className="btn" style={{padding:"4px 10px",fontSize:11}} onClick={function(){previewHtmlArtifact(a)}}>📖 렌더</button>}
+                  <button className="btn" style={{padding:"4px 10px",fontSize:11}} onClick={function(){setSelectedArtifact(a)}}>👁 상세</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 상세 모달 */}
+      {selectedArtifact && (function() {
+        var issue = data.issues.find(function(i){return i.id===selectedArtifact.issueId});
+        var versionInfo = getArtifactVersions(issue, selectedArtifact);
+        return (
+        <div className="modal-overlay" onClick={function(e){if(e.target===e.currentTarget)setSelectedArtifact(null)}}>
+          <div className="modal" style={{maxWidth:900}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <span style={{fontSize:22}}>{artifactEmoji(selectedArtifact.type)}</span>
+                  <h3 style={{margin:0,fontSize:18}}>{selectedArtifact.title}</h3>
+                  {versionInfo.total > 1 && <span className="badge" style={{background:"var(--warning-light)",color:"var(--warning)"}}>{"버전 " + versionInfo.version + " / " + versionInfo.total}</span>}
+                </div>
+                <div className="text-sm text-muted" style={{marginTop:4}}>{selectedArtifact.issueIdentifier + " · " + selectedArtifact.agentName + " · " + new Date(selectedArtifact.createdAt).toLocaleString("ko-KR")}</div>
+              </div>
+              <button className="btn" style={{padding:"4px 8px",fontSize:12}} onClick={function(){setSelectedArtifact(null)}}>✕</button>
+            </div>
+            {selectedArtifact.description && <div className="text-sm" style={{marginBottom:12,padding:10,background:"var(--bg-secondary)",borderRadius:6}}>{selectedArtifact.description}</div>}
+
+            {/* 버전 히스토리 */}
+            {versionInfo.total > 1 && (
+              <div style={{marginBottom:12,padding:10,background:"#fff8e1",borderRadius:6,border:"1px solid var(--warning-light)"}}>
+                <div className="text-sm font-medium" style={{marginBottom:6}}>{"📚 이 파일의 버전 " + versionInfo.total + "개"}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {versionInfo.all.map(function(v, idx) {
+                    var isCurrent = v.id === selectedArtifact.id;
+                    var prevV = idx > 0 ? versionInfo.all[idx-1] : null;
+                    var delta = prevV ? (v.content.length - prevV.content.length) : 0;
+                    return (
+                      <div key={v.id} style={{padding:"6px 10px",background:isCurrent?"var(--accent-light)":"var(--bg-secondary)",borderRadius:4,cursor:isCurrent?"default":"pointer",display:"flex",alignItems:"center",gap:8,fontSize:11}} onClick={function(){if(!isCurrent)setSelectedArtifact({...v, issueId:selectedArtifact.issueId, issueIdentifier:selectedArtifact.issueIdentifier, issueTitle:selectedArtifact.issueTitle})}}>
+                        <span className="badge" style={{fontSize:9,background:isCurrent?"var(--accent)":"var(--bg-tertiary)",color:isCurrent?"white":"inherit"}}>{"v" + (idx+1)}</span>
+                        <span style={{flex:1}}>{v.agentName + " · " + new Date(v.createdAt).toLocaleString("ko-KR")}</span>
+                        <span style={{color:"var(--text-tertiary)"}}>{v.content.length.toLocaleString() + "자"}</span>
+                        {prevV && <span style={{color:delta>0?"var(--success)":delta<0?"var(--danger)":"var(--text-tertiary)",fontWeight:600}}>{(delta>0?"+":"") + delta}</span>}
+                        {isCurrent && <span className="badge" style={{fontSize:8,background:"var(--accent)",color:"white"}}>현재</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="text-sm text-muted" style={{marginTop:6,fontSize:10}}>다른 버전 클릭 시 전환됩니다 · + / - 는 이전 버전 대비 글자 수 차이</div>
+              </div>
+            )}
+
+            <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+              <button className="btn btn-primary" style={{fontSize:12}} onClick={function(){downloadArtifact(selectedArtifact)}}>⬇ 다운로드</button>
+              {selectedArtifact.type === "html" && <button className="btn" style={{fontSize:12}} onClick={function(){previewHtmlArtifact(selectedArtifact)}}>🔍 HTML 미리보기</button>}
+              {selectedArtifact.type === "markdown" && <button className="btn" style={{fontSize:12}} onClick={function(){previewHtmlArtifact(selectedArtifact)}}>📖 렌더링 보기</button>}
+            </div>
+            <pre style={{maxHeight:500,overflow:"auto",background:"var(--bg-primary)",padding:12,borderRadius:6,fontSize:11,whiteSpace:"pre-wrap",wordBreak:"break-all",border:"1px solid var(--border)"}}>{selectedArtifact.content}</pre>
+          </div>
+        </div>
+        );
+      })()}
     </div>
   );
 }
@@ -3103,6 +3344,7 @@ function App() {
     approvals: <ApprovalsPage data={data} onUpdate={setData}/>,
     costs: <CostsPage data={data}/>,
     conversations: <ConversationsPage data={data}/>,
+    artifacts: <ArtifactsPage data={data}/>,
     routines: <HeartbeatPage data={data} onUpdate={setData}/>,
     activity: <ActivityPage data={data}/>,
     settings: <SettingsPage data={data} onUpdate={setData}/>,
