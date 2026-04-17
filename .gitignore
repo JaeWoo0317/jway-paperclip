@@ -1,0 +1,14 @@
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Temporary exports (keep examples/ tracked)
+*-report-*.md
+!examples/*-report-*.md
