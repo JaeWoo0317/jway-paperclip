@@ -156,8 +156,7 @@ async function hashPassword(pw) {
 }
 const MODELS = {
   "claude-opus-4-6":           { name: "Opus 4.6",   inputPer1M: 500, outputPer1M: 2500 },
-  "claude-sonnet-4-5":         { name: "Sonnet 4.5", inputPer1M: 300, outputPer1M: 1500 },
-  "claude-sonnet-4-6":         { name: "Sonnet 4.5", inputPer1M: 300, outputPer1M: 1500 },
+  "claude-sonnet-4-6":         { name: "Sonnet 4.6", inputPer1M: 300, outputPer1M: 1500 },
   "claude-haiku-4-5-20251001": { name: "Haiku 4.5",  inputPer1M: 100, outputPer1M: 500  },
 };
 
@@ -168,22 +167,29 @@ function uid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
 
 // ========== Claude API Service ==========
-async function callClaudeAPI(apiKey, model, systemPrompt, userMessage, maxTokens) {
+async function callClaudeAPI(apiKey, model, systemPrompt, userMessage, maxTokens, tools) {
   maxTokens = maxTokens || 2048;
+  var body = {
+    model: model,
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+  };
+  if (tools && tools.length > 0) body.tools = tools;
+  var hasAdvisor = tools && tools.some(function(t) { return t.type === "advisor_20260301"; });
+  var headers = {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+  };
+  if (hasAdvisor) headers["anthropic-beta"] = "advisor-tool-2026-03-01";
+  // surrogate 문자 제거 (이모지 깨짐 방지)
+  var bodyStr = JSON.stringify(body).replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: model,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    }),
+    headers: headers,
+    body: bodyStr,
   });
   if (!res.ok) {
     const err = await res.text();
@@ -192,41 +198,202 @@ async function callClaudeAPI(apiKey, model, systemPrompt, userMessage, maxTokens
   return await res.json();
 }
 
+function buildAdvisorTool(advisorModel, maxUses) {
+  return {
+    type: "advisor_20260301",
+    name: "advisor",
+    model: advisorModel || "claude-opus-4-6",
+    max_uses: maxUses || 3,
+  };
+}
+
+// Advisor 호환 executor 모델 목록 (공식 문서 기준)
+var ADVISOR_COMPATIBLE_EXECUTORS = ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-6"];
+
 function calcCostCents(model, usage) {
   const p = MODELS[model];
   if (!p || !usage) return 0;
   const inp = ((usage.input_tokens || 0) / 1000000) * p.inputPer1M;
   const cached = ((usage.cache_read_input_tokens || 0) / 1000000) * p.inputPer1M * 0.1;
   const out = ((usage.output_tokens || 0) / 1000000) * p.outputPer1M;
-  return Math.round((inp + cached + out) * 100) / 100;
+  // Advisor 비용: usage.iterations[] 배열에서 advisor_message 타입 합산
+  var advisorCost = 0;
+  if (usage.iterations && Array.isArray(usage.iterations)) {
+    usage.iterations.forEach(function(iter) {
+      if (iter.type === "advisor_message" && iter.model) {
+        var ap = MODELS[iter.model];
+        if (ap) {
+          advisorCost += ((iter.input_tokens || 0) / 1000000) * ap.inputPer1M
+                       + ((iter.cache_read_input_tokens || 0) / 1000000) * ap.inputPer1M * 0.1
+                       + ((iter.output_tokens || 0) / 1000000) * ap.outputPer1M;
+        }
+      }
+    });
+  }
+  return Math.round((inp + cached + out + advisorCost) * 100) / 100;
+}
+
+// Advisor iterations에서 advisor 토큰만 추출
+function extractAdvisorUsage(usage) {
+  if (!usage || !usage.iterations) return null;
+  var advisorIters = usage.iterations.filter(function(i) { return i.type === "advisor_message"; });
+  if (advisorIters.length === 0) return null;
+  var totalIn = 0, totalOut = 0;
+  advisorIters.forEach(function(i) { totalIn += (i.input_tokens || 0); totalOut += (i.output_tokens || 0); });
+  return { calls: advisorIters.length, inputTokens: totalIn, outputTokens: totalOut, model: advisorIters[0].model };
+}
+
+// ========== 목표/승인 연동 ==========
+function recalcGoalProgress(data) {
+  if (!data.goals || data.goals.length === 0) return data;
+  var updatedGoals = data.goals.map(function(goal) {
+    // goalId로 연결된 이슈 찾기
+    var linkedIssues = data.issues.filter(function(i) { return i.goalId === goal.id; });
+    // 담당 에이전트의 이슈도 포함 (goalId 없는 경우)
+    if (linkedIssues.length === 0 && goal.assigneeAgentId) {
+      linkedIssues = data.issues.filter(function(i) { return i.assigneeAgentId === goal.assigneeAgentId && i.status !== "cancelled"; });
+    }
+    if (linkedIssues.length === 0) return goal;
+    var done = linkedIssues.filter(function(i) { return i.status === "done"; }).length;
+    var progress = Math.round(done / linkedIssues.length * 100);
+    var newStatus = progress >= 100 ? "completed" : "active";
+    if (goal.progress === progress && goal.status === newStatus) return goal;
+    return { ...goal, progress: progress, status: newStatus, updatedAt: now() };
+  });
+  return { ...data, goals: updatedGoals };
+}
+
+function createAutoApproval(data, type, title, description, requesterId) {
+  var approval = {
+    id: uid(), title: title, description: description, type: type,
+    requesterId: requesterId || null, status: "pending",
+    autoGenerated: true, createdAt: now(), updatedAt: now(),
+    resolvedAt: null, resolvedBy: null,
+  };
+  var log = { id: uid(), emoji: "🛡️", message: "[자동] 승인 요청: " + title, createdAt: now() };
+  return { ...data, approvals: [...data.approvals, approval], activityLog: [...data.activityLog, log] };
+}
+
+function hasPendingApproval(data, agentId) {
+  return data.approvals.some(function(a) {
+    return a.status === "pending" && a.requesterId === agentId;
+  });
 }
 
 // ========== Heartbeat Engine ==========
+// ========== 협업 헬퍼 ==========
+function getExecutionOrder(agents) {
+  var active = agents.filter(function(a) { return a.status !== "paused"; });
+  var subordinateCount = {};
+  active.forEach(function(a) { subordinateCount[a.id] = 0; });
+  active.forEach(function(a) {
+    if (a.reportsTo && subordinateCount[a.reportsTo] !== undefined) subordinateCount[a.reportsTo]++;
+  });
+  var managers = active.filter(function(a) { return subordinateCount[a.id] > 0; });
+  var workers = active.filter(function(a) { return subordinateCount[a.id] === 0; });
+  return { managers: managers, workers: workers };
+}
+
+function getTeamContext(agent, allAgents, activityLog) {
+  var lines = [];
+  var manager = agent.reportsTo ? allAgents.find(function(a) { return a.id === agent.reportsTo; }) : null;
+  var subordinates = allAgents.filter(function(a) { return a.reportsTo === agent.id; });
+  var peers = agent.reportsTo ? allAgents.filter(function(a) { return a.reportsTo === agent.reportsTo && a.id !== agent.id; }) : [];
+
+  if (manager) lines.push("- " + manager.name + " (" + (manager.title || manager.role) + ", 매니저) — " + manager.status + " [ID:" + manager.id + "]");
+  peers.forEach(function(p) { lines.push("- " + p.name + " (" + (p.title || p.role) + ", 동료) — " + p.status + " [ID:" + p.id + "]"); });
+  subordinates.forEach(function(s) { lines.push("- " + s.name + " (" + (s.title || s.role) + ", 부하) — " + s.status + " [ID:" + s.id + "]"); });
+
+  if (lines.length === 0) return "";
+  return "## 팀 컨텍스트\n" + lines.join("\n") + "\n\n";
+}
+
+function formatIssueWithComments(issue) {
+  var line = "- [" + issue.identifier + "] " + issue.title + " (상태: " + issue.status + ", 우선순위: " + issue.priority + ")\n";
+  if (issue.description) line += "  설명: " + issue.description + "\n";
+  var comments = issue.comments || [];
+  if (comments.length > 0) {
+    comments.slice(-5).forEach(function(c) {
+      line += "  [comment:" + c.agentName + "] " + c.content.substring(0, 100) + "\n";
+    });
+  }
+  return line;
+}
+
 function buildAgentPrompt(agent, issues, data) {
-  const assignedIssues = issues.filter(function(i) {
+  var assignedIssues = issues.filter(function(i) {
     return i.assigneeAgentId === agent.id && i.status !== "done" && i.status !== "cancelled";
   });
-  const company = data.companies[0];
+  var company = data.companies[0];
   var prompt = "당신은 " + (company ? company.name : "JWAY Digital") + "의 " + agent.name + " (" + (agent.title || agent.role) + ") 입니다.\n\n";
   prompt += "## 역할 및 역량\n" + (agent.capabilities || "일반 업무") + "\n\n";
 
+  // 팀 컨텍스트
+  prompt += getTeamContext(agent, data.agents, data.activityLog);
+
+  // 목표 컨텍스트
+  var activeGoals = (data.goals || []).filter(function(g) { return g.status === "active"; });
+  var myGoals = activeGoals.filter(function(g) { return g.assigneeAgentId === agent.id; });
+  var companyGoals = activeGoals.filter(function(g) { return g.level === "company"; });
+  var relevantGoals = myGoals.length > 0 ? myGoals : companyGoals;
+  if (relevantGoals.length > 0) {
+    prompt += "## 현재 목표\n";
+    relevantGoals.forEach(function(g) {
+      prompt += "- " + g.title + " (진행률: " + (g.progress || 0) + "%, 레벨: " + g.level + (g.targetDate ? ", 마감: " + g.targetDate : "") + ")\n";
+      if (g.description) prompt += "  " + g.description + "\n";
+    });
+    prompt += "이슈 처리 시 위 목표 달성에 기여하도록 우선순위를 정하세요.\n\n";
+  }
+
+  // 할당된 이슈 (코멘트 포함)
   if (assignedIssues.length > 0) {
     prompt += "## 할당된 이슈 목록\n";
-    assignedIssues.forEach(function(issue) {
-      prompt += "- [" + issue.identifier + "] " + issue.title + " (상태: " + issue.status + ", 우선순위: " + issue.priority + ")\n";
-      if (issue.description) prompt += "  설명: " + issue.description + "\n";
-    });
+    assignedIssues.forEach(function(issue) { prompt += formatIssueWithComments(issue); });
   } else {
     prompt += "## 현재 할당된 이슈가 없습니다.\n";
   }
 
+  // 팀원 이슈 (매니저인 경우 부하 이슈, 실무자인 경우 매니저 이슈)
+  var subordinates = data.agents.filter(function(a) { return a.reportsTo === agent.id; });
+  var teamIssueIds = {};
+  assignedIssues.forEach(function(i) { teamIssueIds[i.id] = true; });
+  var teamIssues = [];
+  if (subordinates.length > 0) {
+    teamIssues = issues.filter(function(i) {
+      return !teamIssueIds[i.id] && i.status !== "done" && i.status !== "cancelled" && subordinates.some(function(s) { return s.id === i.assigneeAgentId; });
+    });
+  } else if (agent.reportsTo) {
+    var peers = data.agents.filter(function(a) { return a.reportsTo === agent.reportsTo && a.id !== agent.id; });
+    teamIssues = issues.filter(function(i) {
+      return !teamIssueIds[i.id] && i.status !== "done" && i.status !== "cancelled" && peers.some(function(p) { return p.id === i.assigneeAgentId; });
+    }).slice(0, 5);
+  }
+  if (teamIssues.length > 0) {
+    prompt += "\n## 팀원 이슈 (참고용)\n";
+    teamIssues.forEach(function(issue) {
+      var assignee = data.agents.find(function(a) { return a.id === issue.assigneeAgentId; });
+      prompt += "- [" + issue.identifier + "] " + issue.title + " (담당: " + (assignee ? assignee.name : "?") + ", " + issue.status + ")\n";
+      var comments = issue.comments || [];
+      if (comments.length > 0) {
+        comments.slice(-3).forEach(function(c) { prompt += "  [comment:" + c.agentName + "] " + c.content.substring(0, 80) + "\n"; });
+      }
+    });
+  }
+
+  // 지시사항
   prompt += "\n## 지시사항\n";
   prompt += "할당된 이슈를 검토하고, 각 이슈에 대해 다음 JSON 형식으로 응답해주세요:\n";
-  prompt += '```json\n{\n  "actions": [\n    {\n      "issueId": "이슈ID",\n      "action": "start|complete|comment",\n      "comment": "작업 내용이나 결과 설명"\n    }\n  ],\n  "summary": "전체 업무 요약"\n}\n```\n';
+  prompt += '```json\n{\n  "actions": [\n    {\n      "issueId": "이슈ID",\n      "action": "start|complete|comment|reassign",\n      "comment": "작업 내용이나 결과 설명",\n      "targetAgentId": "재할당 대상 에이전트ID (reassign시에만)"\n    }\n  ],\n  "summary": "전체 업무 요약"\n}\n```\n';
   prompt += "- action이 'start'면 이슈를 '진행 중'으로 변경\n";
   prompt += "- action이 'complete'면 이슈를 '완료'로 변경\n";
-  prompt += "- action이 'comment'면 코멘트만 추가\n";
+  prompt += "- action이 'comment'면 코멘트만 추가 (팀원과 소통용)\n";
+  prompt += "- action이 'reassign'면 이슈를 다른 팀원에게 재할당 (targetAgentId 필수)\n";
+  prompt += "- 팀원 이슈에 코멘트를 남기거나 재할당할 수 있습니다\n";
   prompt += "- 할당된 이슈가 없으면 summary만 작성\n";
+  if (agent.adapterConfig && agent.adapterConfig.webSearchEnabled) {
+    prompt += "- 웹 검색 도구가 활성화되어 있습니다. 이슈에 필요한 정보를 실제로 검색하세요 (시장 조사, 경쟁사 분석, 기술 트렌드 등)\n";
+    prompt += "- 검색 결과를 바탕으로 구체적이고 실행 가능한 코멘트를 남기세요\n";
+  }
 
   return prompt;
 }
@@ -244,17 +411,17 @@ function parseAgentResponse(text) {
 }
 
 // Harness: 에이전트 출력 검증
-function validateActions(actions, issues) {
+function validateActions(actions, issues, agents) {
   var validActions = [];
   var violations = [];
-  var validStatuses = ["start", "complete", "comment"];
+  var validStatuses = ["start", "complete", "comment", "reassign"];
   (actions || []).forEach(function(act) {
     if (!act.issueId || !act.action) {
       violations.push("액션에 issueId 또는 action이 누락됨");
       return;
     }
     if (validStatuses.indexOf(act.action) === -1) {
-      violations.push("허용되지 않는 action: " + act.action + " (허용: start, complete, comment)");
+      violations.push("허용되지 않는 action: " + act.action + " (허용: start, complete, comment, reassign)");
       return;
     }
     var issue = issues.find(function(i) { return i.id === act.issueId || i.identifier === act.issueId; });
@@ -270,6 +437,13 @@ function validateActions(actions, issues) {
       violations.push(act.issueId + ": 이미 완료된 이슈");
       return;
     }
+    if (act.action === "reassign") {
+      if (!act.targetAgentId) { violations.push(act.issueId + ": reassign에 targetAgentId 누락"); return; }
+      var target = (agents || []).find(function(a) { return a.id === act.targetAgentId || a.name === act.targetAgentId; });
+      if (!target) { violations.push(act.issueId + ": 존재하지 않는 에이전트로 재할당: " + act.targetAgentId); return; }
+      act._resolvedTargetId = target.id;
+      act._resolvedTargetName = target.name;
+    }
     validActions.push(act);
   });
   return { validActions: validActions, violations: violations };
@@ -284,7 +458,25 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
     return { error: "budget_exceeded", agent: agent.name };
   }
 
-  var model = (agent.adapterConfig && agent.adapterConfig.model) || "claude-sonnet-4-5";
+  // Approval check — 미해결 승인이 있으면 차단
+  if (hasPendingApproval(data, agent.id)) {
+    return { error: "pending_approval", agent: agent.name };
+  }
+
+  var model = (agent.adapterConfig && agent.adapterConfig.model) || "claude-sonnet-4-6";
+  var advisorEnabled = agent.adapterConfig && agent.adapterConfig.advisorEnabled;
+  var advisorModel = (agent.adapterConfig && agent.adapterConfig.advisorModel) || "claude-opus-4-6";
+  var advisorMaxUses = (agent.adapterConfig && agent.adapterConfig.advisorMaxUses) || 3;
+  // 도구 빌드: 웹 검색 + Advisor
+  var tools = [];
+  var webSearchEnabled = agent.adapterConfig && agent.adapterConfig.webSearchEnabled;
+  if (webSearchEnabled) {
+    tools.push({ type: "web_search_20250305", name: "web_search", max_uses: (agent.adapterConfig.webSearchMaxUses) || 3 });
+  }
+  if (advisorEnabled) {
+    tools.push(buildAdvisorTool(advisorModel, advisorMaxUses));
+  }
+  var advisorTools = tools.length > 0 ? tools : null;
   var systemPrompt = (agent.adapterConfig && agent.adapterConfig.systemPrompt) || "";
   if (!systemPrompt) {
     systemPrompt = "당신은 AI 에이전트 회사의 " + (agent.title || agent.role) + "입니다. 주어진 업무를 성실히 수행하세요. 한국어로 응답하세요.";
@@ -303,6 +495,9 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
   var totalCostCents = 0;
   var totalInputTokens = 0;
   var totalOutputTokens = 0;
+  var totalAdvisorCalls = 0;
+  var totalAdvisorInputTokens = 0;
+  var totalAdvisorOutputTokens = 0;
   var allLogs = [];
 
   try {
@@ -322,13 +517,22 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
     while (attemptCount < MAX_ATTEMPTS) {
       attemptCount++;
 
-      var response = await callClaudeAPI(data.settings.apiKey, model, systemPrompt, currentMessage, (agent.adapterConfig && agent.adapterConfig.maxTokens) || 2048);
+      // 웹 검색 활성 시 max_tokens 자동 증가 (검색 결과가 토큰을 많이 소모)
+      var baseMaxTokens = (agent.adapterConfig && agent.adapterConfig.maxTokens) || 2048;
+      var effectiveMaxTokens = webSearchEnabled ? Math.max(baseMaxTokens, 8192) : baseMaxTokens;
+      var response = await callClaudeAPI(data.settings.apiKey, model, systemPrompt, currentMessage, effectiveMaxTokens, advisorTools);
       var responseText = response.content.map(function(c) { return c.text || ""; }).join("\n");
       var usage = response.usage || {};
       var costCents = calcCostCents(model, usage);
       totalCostCents += costCents;
       totalInputTokens += (usage.input_tokens || 0);
       totalOutputTokens += (usage.output_tokens || 0);
+      var advUsage = extractAdvisorUsage(usage);
+      if (advUsage) {
+        totalAdvisorCalls += advUsage.calls;
+        totalAdvisorInputTokens += advUsage.inputTokens;
+        totalAdvisorOutputTokens += advUsage.outputTokens;
+      }
       finalResponseText = responseText;
 
       // GATE 1: JSON 파싱 검증
@@ -336,7 +540,7 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
       if (!parsed._parseOk && parsed.actions.length === 0) {
         if (attemptCount < MAX_ATTEMPTS) {
           allLogs.push({ id: uid(), emoji: "🔄", message: agent.icon + " " + agent.name + " [하네스] 응답 파싱 실패, 재시도 " + attemptCount + "/" + MAX_ATTEMPTS, createdAt: now() });
-          currentMessage = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 다음 형식으로 응답하세요:\n```json\n{\"actions\": [{\"issueId\": \"이슈ID\", \"action\": \"start|complete|comment\", \"comment\": \"설명\"}], \"summary\": \"요약\"}\n```\n\n" + userMessage;
+          currentMessage = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 다음 형식으로 응답하세요:\n```json\n{\"actions\": [{\"issueId\": \"이슈ID\", \"action\": \"start|complete|comment|reassign\", \"comment\": \"설명\", \"targetAgentId\": \"재할당 시에만\"}], \"summary\": \"요약\"}\n```\n\n" + userMessage;
           continue;
         }
         allLogs.push({ id: uid(), emoji: "⚠️", message: agent.icon + " " + agent.name + " [하네스] 파싱 실패 " + MAX_ATTEMPTS + "회 — 원본 응답 저장", createdAt: now() });
@@ -345,7 +549,7 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
       }
 
       // GATE 2: 액션 유효성 검증
-      var validation = validateActions(parsed.actions, tempData.issues);
+      var validation = validateActions(parsed.actions, tempData.issues, tempData.agents);
       if (validation.violations.length > 0) {
         allLogs.push({ id: uid(), emoji: "🛡️", message: agent.icon + " " + agent.name + " [하네스] 검증 위반 " + validation.violations.length + "건 차단: " + validation.violations.join(", ").substring(0, 100), createdAt: now() });
       }
@@ -366,13 +570,52 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
         updatedIssues = updatedIssues.map(function(issue) {
           if (issue.id === act.issueId || issue.identifier === act.issueId) {
             var changes = { updatedAt: now() };
+            var comments = issue.comments ? [...issue.comments] : [];
             if (act.action === "start") { changes.status = "in_progress"; changes.startedAt = now(); }
             else if (act.action === "complete") { changes.status = "done"; changes.completedAt = now(); }
-            actionLogs.push({ id: uid(), emoji: act.action === "complete" ? "✅" : "🔄", message: agent.icon + " " + agent.name + ": " + (issue.identifier || "") + " → " + (act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : "코멘트") + (act.comment ? " — " + act.comment.substring(0, 80) : ""), createdAt: now() });
+            else if (act.action === "reassign") {
+              changes.assigneeAgentId = act._resolvedTargetId || act.targetAgentId;
+              comments.push({ id: uid(), agentId: agent.id, agentName: agent.name, content: "→ " + (act._resolvedTargetName || act.targetAgentId) + "에게 재할당" + (act.comment ? ": " + act.comment : ""), type: "delegation", createdAt: now() });
+            }
+            if (act.comment && act.action !== "reassign") {
+              comments.push({ id: uid(), agentId: agent.id, agentName: agent.name, content: act.comment, type: act.action === "complete" ? "review" : "comment", createdAt: now() });
+            }
+            changes.comments = comments;
+            var emoji = act.action === "complete" ? "✅" : act.action === "reassign" ? "🔀" : act.action === "start" ? "🔄" : "💬";
+            var label = act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : act.action === "reassign" ? "→" + (act._resolvedTargetName || "") + " 재할당" : "코멘트";
+            actionLogs.push({ id: uid(), emoji: emoji, message: agent.icon + " " + agent.name + ": " + (issue.identifier || "") + " " + label + (act.comment ? " — " + act.comment.substring(0, 80) : ""), createdAt: now() });
             return { ...issue, ...changes };
           }
           return issue;
         });
+      });
+    }
+
+    // 목표 진행률 자동 업데이트
+    var goalRecalc = recalcGoalProgress({ ...tempData, issues: updatedIssues });
+    updatedIssues = goalRecalc.issues;
+    var goalLogs = [];
+    if (goalRecalc.goals) {
+      goalRecalc.goals.forEach(function(g, idx) {
+        var orig = tempData.goals[idx];
+        if (orig && orig.progress !== g.progress) {
+          goalLogs.push({ id: uid(), emoji: "🎯", message: "목표 \"" + g.title + "\" 진행률: " + orig.progress + "% → " + g.progress + "%" + (g.status === "completed" ? " (완료!)" : ""), createdAt: now() });
+        }
+      });
+    }
+
+    // 재할당 시 자동 승인 요청
+    var autoApprovals = [...(tempData.approvals || [])];
+    var approvalLogs = [];
+    if (finalParsed.actions) {
+      finalParsed.actions.forEach(function(act) {
+        if (act.action === "reassign") {
+          var issue = updatedIssues.find(function(i) { return i.id === act.issueId || i.identifier === act.issueId; });
+          var apTitle = agent.name + ": " + (issue ? issue.identifier : act.issueId) + " 재할당 → " + (act._resolvedTargetName || act.targetAgentId);
+          var ap = { id: uid(), title: apTitle, description: act.comment || "", type: "action", requesterId: agent.id, status: "pending", autoGenerated: true, createdAt: now(), updatedAt: now(), resolvedAt: null, resolvedBy: null };
+          autoApprovals.push(ap);
+          approvalLogs.push({ id: uid(), emoji: "🛡️", message: "[자동] 승인 요청: " + apTitle, createdAt: now() });
+        }
       });
     }
 
@@ -381,7 +624,10 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
       id: uid(), companyId: company.id, agentId: agent.id, provider: "anthropic",
       model: model, inputTokens: totalInputTokens,
       cachedInputTokens: 0,
-      outputTokens: totalOutputTokens, costCents: totalCostCents, occurredAt: now(), createdAt: now(),
+      outputTokens: totalOutputTokens, costCents: totalCostCents,
+      advisorEnabled: !!advisorEnabled, advisorModel: advisorEnabled ? advisorModel : null,
+      advisorCalls: totalAdvisorCalls, advisorInputTokens: totalAdvisorInputTokens, advisorOutputTokens: totalAdvisorOutputTokens,
+      occurredAt: now(), createdAt: now(),
     };
 
     // Record heartbeat run
@@ -389,6 +635,8 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
       id: runId, companyId: company.id, agentId: agent.id, model: model,
       status: "completed", inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens, costCents: totalCostCents,
+      advisorEnabled: !!advisorEnabled, advisorModel: advisorEnabled ? advisorModel : null,
+      advisorCalls: totalAdvisorCalls, advisorInputTokens: totalAdvisorInputTokens, advisorOutputTokens: totalAdvisorOutputTokens,
       attempts: attemptCount,
       summary: finalParsed.summary || "", responseExcerpt: finalResponseText.substring(0, 500),
       startedAt: startTime, completedAt: now(),
@@ -403,15 +651,18 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
     });
 
     var attemptNote = attemptCount > 1 ? " (" + attemptCount + "회 시도)" : "";
-    actionLogs.push({ id: uid(), emoji: "💓", message: agent.icon + " " + agent.name + " heartbeat 완료" + attemptNote + " — " + totalInputTokens + "+" + totalOutputTokens + " tokens, $" + (totalCostCents / 100).toFixed(2), createdAt: now() });
+    var advisorNote = advisorEnabled && totalAdvisorCalls > 0 ? " 🧠Advisor(" + (MODELS[advisorModel] || {}).name + " x" + totalAdvisorCalls + ")" : advisorEnabled ? " 🧠Advisor(대기)" : "";
+    actionLogs.push({ id: uid(), emoji: "💓", message: agent.icon + " " + agent.name + " heartbeat 완료" + attemptNote + advisorNote + " — " + totalInputTokens + "+" + totalOutputTokens + " tokens, $" + (totalCostCents / 100).toFixed(2), createdAt: now() });
 
     var finalData = {
       ...tempData,
       agents: finalAgents,
       issues: updatedIssues,
+      goals: goalRecalc.goals || tempData.goals,
+      approvals: autoApprovals,
       costEvents: [...tempData.costEvents, costEvent],
       heartbeatRuns: [...tempData.heartbeatRuns, hbRun],
-      activityLog: [...tempData.activityLog, ...allLogs, ...actionLogs],
+      activityLog: [...tempData.activityLog, ...allLogs, ...actionLogs, ...goalLogs, ...approvalLogs],
     };
     onUpdate(finalData);
     return { success: true, run: hbRun, costCents: totalCostCents, attempts: attemptCount };
@@ -426,6 +677,106 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
     onUpdate({ ...data, agents: errAgents, heartbeatRuns: [...data.heartbeatRuns, errRun], activityLog: [...data.activityLog, ...allLogs, errLog] });
     return { success: false, error: err.message };
   }
+}
+
+// ========== 협업 Heartbeat ==========
+// 전역 협업 중단 플래그
+var COLLAB_ABORT = { current: false };
+
+async function runCollaborationHeartbeat(data, onUpdate, maxRounds, onProgress, delaySeconds) {
+  var company = data.companies[0];
+  if (!company || !data.settings.apiKey) return { success: false, error: "API 키 또는 회사 미설정" };
+
+  COLLAB_ABORT.current = false;
+  var order = getExecutionOrder(data.agents);
+  // 계층 없으면 전체를 workers로 처리
+  if (order.managers.length === 0) { order.workers = data.agents.filter(function(a) { return a.status !== "paused"; }); }
+
+  var totalCostCents = 0;
+  var totalAgentRuns = 0;
+  var roundResults = [];
+  var startTime = now();
+  var aborted = false;
+  var delayMs = (delaySeconds || 0) * 1000;
+
+  // 중단 가능한 sleep 함수
+  var sleep = function(ms) {
+    return new Promise(function(resolve) {
+      var start = Date.now();
+      var iv = setInterval(function() {
+        if (COLLAB_ABORT.current || Date.now() - start >= ms) {
+          clearInterval(iv);
+          resolve();
+        }
+      }, 500);
+    });
+  };
+
+  for (var round = 1; round <= maxRounds; round++) {
+    if (COLLAB_ABORT.current) { aborted = true; break; }
+    var roundChanges = 0;
+
+    // 매니저 페이즈
+    if (order.managers.length > 0) {
+      for (var m = 0; m < order.managers.length; m++) {
+        if (COLLAB_ABORT.current) { aborted = true; break; }
+        var mgr = order.managers[m];
+        if (onProgress) onProgress({ round: round, maxRounds: maxRounds, phase: "manager", agentName: mgr.name, agentIcon: mgr.icon, waiting: false });
+        var freshData = load() || data;
+        var freshAgent = freshData.agents.find(function(a) { return a.id === mgr.id; }) || mgr;
+        if (freshAgent.budgetMonthlyCents > 0 && freshAgent.spentMonthlyCents >= freshAgent.budgetMonthlyCents) continue;
+        var roundPrompt = round === 1 ? "팀의 이슈를 검토하고 팀원들에게 지시/코멘트를 남겨주세요. 필요하면 이슈를 재할당하세요." : "팀원들의 작업 결과를 검토하고 피드백을 남겨주세요.";
+        var result = await executeHeartbeat(freshAgent, freshData, function(d) { save(d); onUpdate(d); }, roundPrompt);
+        if (result && result.success) { totalCostCents += result.costCents || 0; totalAgentRuns++; roundChanges++; }
+        roundResults.push({ round: round, phase: "manager", agentId: mgr.id, agentName: mgr.name, success: result ? result.success : false, costCents: result ? result.costCents || 0 : 0 });
+        // rate limit 회피 지연 (마지막 호출 후엔 생략)
+        if (delayMs > 0 && (m < order.managers.length - 1 || order.workers.length > 0)) {
+          if (onProgress) onProgress({ round: round, maxRounds: maxRounds, phase: "manager", agentName: "대기 중 (rate limit 회피)", agentIcon: "⏳", waiting: true });
+          await sleep(delayMs);
+        }
+      }
+    }
+    if (aborted) break;
+
+    // 실무자 페이즈
+    for (var w = 0; w < order.workers.length; w++) {
+      if (COLLAB_ABORT.current) { aborted = true; break; }
+      var wkr = order.workers[w];
+      if (onProgress) onProgress({ round: round, maxRounds: maxRounds, phase: "worker", agentName: wkr.name, agentIcon: wkr.icon, waiting: false });
+      var freshData2 = load() || data;
+      var freshAgent2 = freshData2.agents.find(function(a) { return a.id === wkr.id; }) || wkr;
+      if (freshAgent2.budgetMonthlyCents > 0 && freshAgent2.spentMonthlyCents >= freshAgent2.budgetMonthlyCents) continue;
+      var roundPrompt2 = round === 1 ? "매니저의 코멘트를 확인하고 할당된 이슈를 진행해주세요." : "이전 피드백을 반영하여 이슈를 업데이트해주세요.";
+      var result2 = await executeHeartbeat(freshAgent2, freshData2, function(d) { save(d); onUpdate(d); }, roundPrompt2);
+      if (result2 && result2.success) { totalCostCents += result2.costCents || 0; totalAgentRuns++; roundChanges++; }
+      roundResults.push({ round: round, phase: "worker", agentId: wkr.id, agentName: wkr.name, success: result2 ? result2.success : false, costCents: result2 ? result2.costCents || 0 : 0 });
+      if (delayMs > 0 && (w < order.workers.length - 1 || round < maxRounds)) {
+        if (onProgress) onProgress({ round: round, maxRounds: maxRounds, phase: "worker", agentName: "대기 중 (rate limit 회피)", agentIcon: "⏳", waiting: true });
+        await sleep(delayMs);
+      }
+    }
+    if (aborted) break;
+
+    // 변경 없으면 조기 종료
+    if (round < maxRounds && roundChanges === 0) break;
+  }
+
+  // 협업 요약 로그
+  var finalData = load() || data;
+  var statusLabel = aborted ? "중단됨" : "완료";
+  var collabLog = { id: uid(), emoji: aborted ? "⏹" : "🤝", message: "협업 Heartbeat " + statusLabel + " — " + roundResults.length + "회 실행, " + maxRounds + " 라운드, $" + (totalCostCents / 100).toFixed(2), createdAt: now() };
+  var collabRun = {
+    id: uid(), companyId: company.id, agentId: "collaboration", model: "multi",
+    status: aborted ? "aborted" : "completed", mode: "collaboration", rounds: maxRounds,
+    agentResults: roundResults, costCents: totalCostCents,
+    summary: (aborted ? "[중단됨] " : "") + "매니저 " + order.managers.length + "명 + 실무자 " + order.workers.length + "명, " + totalAgentRuns + "회 실행",
+    startedAt: startTime, completedAt: now(),
+  };
+  onUpdate({ ...finalData, heartbeatRuns: [...finalData.heartbeatRuns, collabRun], activityLog: [...finalData.activityLog, collabLog] });
+  save(load());
+
+  if (onProgress) onProgress(null);
+  return { success: true, costCents: totalCostCents, rounds: maxRounds, agentRuns: totalAgentRuns };
 }
 
 function LockScreen({ onUnlock }) {
@@ -544,6 +895,7 @@ function SidebarNav({ data, activePage, onNav, mobileOpen, onClose }) {
     {id:"goals",icon:"🎯",label:"목표"},
     {id:"approvals",icon:"🛡️",label:"승인",badge:pa||null},
     {id:"costs",icon:"💰",label:"비용"},
+    {id:"conversations",icon:"💬",label:"대화"},
     {id:"routines",icon:"💓",label:"Heartbeat"},
     {id:"activity",icon:"📜",label:"활동 로그"},
     {id:"settings",icon:"⚙️",label:"설정"},
@@ -704,26 +1056,101 @@ function DashboardPage({ data, onUpdate }) {
         <div className="card metric-card" style={{padding:14}}><div className="metric-label">이번 달 비용</div><div className="metric-value">{"$"+(ts/100).toFixed(2)}<span style={{fontSize:13,fontWeight:400,color:"var(--text-tertiary)"}}>{" / $"+(co?(co.budgetMonthlyCents/100).toFixed(0):0)}</span></div></div>
         <div className="card metric-card" style={{padding:14}}><div className="metric-label">승인 대기</div><div className="metric-value">{data.approvals.filter(a=>a.status==="pending").length}</div></div>
       </div>
-      <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
-        <div className="card" style={{flex:"1 1 360px",padding:14}}>
-          <div className="font-medium" style={{marginBottom:8,fontSize:14}}>최근 활동</div>
-          {data.activityLog.length===0
-            ?<div className="text-sm text-muted" style={{padding:16,textAlign:"center"}}>아직 활동이 없습니다</div>
-            :data.activityLog.slice(-8).reverse().map(l=>(
-              <div key={l.id} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:12}}>{l.emoji||"📌"}</span><span style={{flex:1,fontSize:12}}>{l.message}</span><span style={{fontSize:10,color:"var(--text-tertiary)",whiteSpace:"nowrap"}}>{new Date(l.createdAt).toLocaleString("ko-KR")}</span></div>
-            ))
-          }
-        </div>
-        <div className="card" style={{flex:"1 1 260px",padding:14}}>
-          <div className="font-medium" style={{marginBottom:8,fontSize:14}}>에이전트 현황</div>
-          {data.agents.length===0
-            ?<div className="text-sm text-muted" style={{padding:16,textAlign:"center"}}>에이전트가 없습니다</div>
-            :data.agents.map(a=>(
-              <div key={a.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:16}}>{a.icon||"🤖"}</span><div style={{flex:1}}><div style={{fontSize:12,fontWeight:500}}>{a.name}</div></div><span className={"badge badge-"+a.status} style={{fontSize:10,padding:"0 5px"}}>{a.status}</span></div>
-            ))
-          }
-        </div>
-      </div>
+      {/* 이슈 진행률 + 에이전트 성과 */}
+      {(function() {
+        var totalIssues = data.issues.length;
+        var doneIssues = data.issues.filter(function(i){return i.status==="done"}).length;
+        var inProgress = data.issues.filter(function(i){return i.status==="in_progress"}).length;
+        var todoIssues = data.issues.filter(function(i){return i.status==="todo"}).length;
+        var backlog = data.issues.filter(function(i){return i.status==="backlog"}).length;
+        var donePct = totalIssues > 0 ? Math.round(doneIssues / totalIssues * 100) : 0;
+        var totalComments = data.issues.reduce(function(s,i){return s+(i.comments||[]).length},0);
+        var collabRuns = data.heartbeatRuns.filter(function(r){return r.mode==="collaboration"}).length;
+        var totalHbRuns = data.heartbeatRuns.length;
+
+        // 에이전트별 성과
+        var agentStats = data.agents.map(function(a) {
+          var assigned = data.issues.filter(function(i){return i.assigneeAgentId===a.id}).length;
+          var completed = data.issues.filter(function(i){return i.assigneeAgentId===a.id && i.status==="done"}).length;
+          var comments = data.issues.reduce(function(s,i){return s+(i.comments||[]).filter(function(c){return c.agentId===a.id}).length},0);
+          var runs = data.heartbeatRuns.filter(function(r){return r.agentId===a.id && r.status==="completed"}).length;
+          return {agent:a, assigned:assigned, completed:completed, comments:comments, runs:runs, rate:assigned>0?Math.round(completed/assigned*100):0};
+        }).sort(function(a,b){return b.completed-a.completed});
+
+        return (
+          <React.Fragment>
+            {/* 진행률 바 */}
+            {totalIssues > 0 && (
+              <div className="card" style={{padding:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <div className="font-medium" style={{fontSize:14}}>이슈 진행률</div>
+                  <span className="text-sm" style={{color:"var(--accent)",fontWeight:600}}>{donePct + "% 완료"}</span>
+                </div>
+                <div style={{display:"flex",height:24,borderRadius:12,overflow:"hidden",background:"var(--bg-tertiary)"}}>
+                  {doneIssues > 0 && <div title={"완료 "+doneIssues} style={{width:(doneIssues/totalIssues*100)+"%",background:"var(--success)",transition:"width 0.3s"}}/>}
+                  {inProgress > 0 && <div title={"진행중 "+inProgress} style={{width:(inProgress/totalIssues*100)+"%",background:"var(--warning)",transition:"width 0.3s"}}/>}
+                  {todoIssues > 0 && <div title={"할일 "+todoIssues} style={{width:(todoIssues/totalIssues*100)+"%",background:"var(--info)",transition:"width 0.3s"}}/>}
+                </div>
+                <div style={{display:"flex",gap:16,marginTop:8,fontSize:11}}>
+                  <span><span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:"var(--success)",marginRight:4}}/>{"완료 "+doneIssues}</span>
+                  <span><span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:"var(--warning)",marginRight:4}}/>{"진행중 "+inProgress}</span>
+                  <span><span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:"var(--info)",marginRight:4}}/>{"할일 "+todoIssues}</span>
+                  <span><span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:"var(--bg-tertiary)",marginRight:4}}/>{"백로그 "+backlog}</span>
+                </div>
+              </div>
+            )}
+
+            {/* 협업 요약 */}
+            <div className="card-grid">
+              <div className="card metric-card" style={{padding:14}}><div className="metric-label">Heartbeat 실행</div><div className="metric-value">{totalHbRuns}</div><div className="metric-sub">{"협업 "+collabRuns+"회"}</div></div>
+              <div className="card metric-card" style={{padding:14}}><div className="metric-label">코멘트</div><div className="metric-value">{totalComments}</div><div className="metric-sub">에이전트 간 대화</div></div>
+              <div className="card metric-card" style={{padding:14}}><div className="metric-label">완료 이슈</div><div className="metric-value">{doneIssues}<span style={{fontSize:13,fontWeight:400,color:"var(--text-tertiary)"}}>{" / "+totalIssues}</span></div></div>
+              <div className="card metric-card" style={{padding:14}}><div className="metric-label">완료율</div><div className="metric-value">{donePct+"%"}</div></div>
+            </div>
+
+            {/* 에이전트 성과 + 최근 활동 */}
+            <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+              <div className="card" style={{flex:"1 1 400px",padding:14}}>
+                <div className="font-medium" style={{marginBottom:10,fontSize:14}}>에이전트 성과</div>
+                {agentStats.length===0
+                  ?<div className="text-sm text-muted" style={{padding:16,textAlign:"center"}}>에이전트가 없습니다</div>
+                  :agentStats.map(function(s) {
+                    return (
+                      <div key={s.agent.id} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                        <span style={{fontSize:18}}>{s.agent.icon||"🤖"}</span>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:"flex",alignItems:"center",gap:6}}>
+                            <span style={{fontSize:12,fontWeight:600}}>{s.agent.name}</span>
+                            <span className={"badge badge-"+s.agent.status} style={{fontSize:9,padding:"0 4px"}}>{s.agent.status}</span>
+                          </div>
+                          <div style={{display:"flex",height:6,borderRadius:3,overflow:"hidden",background:"var(--bg-tertiary)",marginTop:4}}>
+                            <div style={{width:s.rate+"%",background:s.rate>=80?"var(--success)":s.rate>=50?"var(--warning)":"var(--info)",transition:"width 0.3s"}}/>
+                          </div>
+                        </div>
+                        <div style={{textAlign:"right",fontSize:11,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>
+                          <div>{s.completed+"/"+s.assigned+" 이슈"}</div>
+                          <div>{s.comments > 0 ? s.comments+" 코멘트" : ""}{s.runs > 0 ? " | "+s.runs+"회 실행":""}</div>
+                        </div>
+                      </div>
+                    );
+                  })
+                }
+              </div>
+              <div className="card" style={{flex:"1 1 300px",padding:14}}>
+                <div className="font-medium" style={{marginBottom:8,fontSize:14}}>최근 활동</div>
+                {data.activityLog.length===0
+                  ?<div className="text-sm text-muted" style={{padding:16,textAlign:"center"}}>아직 활동이 없습니다</div>
+                  :data.activityLog.slice(-10).reverse().map(function(l) {
+                    return (
+                      <div key={l.id} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid var(--border)"}}><span style={{fontSize:12}}>{l.emoji||"📌"}</span><span style={{flex:1,fontSize:11,lineHeight:1.3}}>{l.message.substring(0,80)}</span><span style={{fontSize:10,color:"var(--text-tertiary)",whiteSpace:"nowrap"}}>{new Date(l.createdAt).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}</span></div>
+                    );
+                  })
+                }
+              </div>
+            </div>
+          </React.Fragment>
+        );
+      })()}
     </div>
   );
 }
@@ -744,13 +1171,13 @@ const ROLE_CAPS = {
 
 function AgentsPage({ data, onUpdate }) {
   const [show, setShow] = useState(false);
-  const blank = {name:"",role:"engineer",title:"",icon:"🤖",model:"claude-haiku-4-5-20251001",budget:2000,caps:ROLE_CAPS["engineer"]||"",reportsTo:""};
+  const blank = {name:"",role:"engineer",title:"",icon:"🤖",model:"claude-haiku-4-5-20251001",budget:2000,caps:ROLE_CAPS["engineer"]||"",reportsTo:"",advisorEnabled:false,advisorModel:"claude-opus-4-6",advisorMaxUses:3,webSearchEnabled:false,webSearchMaxUses:3};
   const [f, setF] = useState({...blank});
 
   const create = () => {
     if(!f.name.trim()) return;
     const co = data.companies[0];
-    const ag = {id:uid(),companyId:co?co.id:"",name:f.name,role:f.role,title:f.title,icon:f.icon,status:"idle",reportsTo:f.reportsTo||null,capabilities:f.caps,adapterType:"claude_api",adapterConfig:{model:f.model,systemPrompt:"",maxTokens:4096},runtimeConfig:{},budgetMonthlyCents:parseInt(f.budget)||0,spentMonthlyCents:0,permissions:{canCreateIssues:true,canHireAgents:false},lastHeartbeatAt:null,createdAt:now(),updatedAt:now()};
+    const ag = {id:uid(),companyId:co?co.id:"",name:f.name,role:f.role,title:f.title,icon:f.icon,status:"idle",reportsTo:f.reportsTo||null,capabilities:f.caps,adapterType:"claude_api",adapterConfig:{model:f.model,systemPrompt:"",maxTokens:4096,advisorEnabled:!!f.advisorEnabled,advisorModel:f.advisorModel||"claude-opus-4-6",advisorMaxUses:parseInt(f.advisorMaxUses)||3,webSearchEnabled:!!f.webSearchEnabled,webSearchMaxUses:parseInt(f.webSearchMaxUses)||3},runtimeConfig:{},budgetMonthlyCents:parseInt(f.budget)||0,spentMonthlyCents:0,permissions:{canCreateIssues:true,canHireAgents:false},lastHeartbeatAt:null,createdAt:now(),updatedAt:now()};
     onUpdate({...data,agents:[...data.agents,ag],activityLog:[...data.activityLog,{id:uid(),emoji:"👤",message:ag.name+" 에이전트가 "+(MODELS[f.model]||{}).name+" 모델로 채용됨",createdAt:now()}]});
     setF({...blank}); setShow(false);
   };
@@ -765,7 +1192,7 @@ function AgentsPage({ data, onUpdate }) {
 
   const startEdit = (a) => {
     setEditId(a.id);
-    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-5",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||"",systemPrompt:(a.adapterConfig&&a.adapterConfig.systemPrompt)||""});
+    setEf({name:a.name,title:a.title||"",role:a.role,icon:a.icon||"🤖",model:(a.adapterConfig&&a.adapterConfig.model)||"claude-sonnet-4-6",budget:a.budgetMonthlyCents,caps:a.capabilities||"",reportsTo:a.reportsTo||"",systemPrompt:(a.adapterConfig&&a.adapterConfig.systemPrompt)||"",advisorEnabled:!!(a.adapterConfig&&a.adapterConfig.advisorEnabled),advisorModel:(a.adapterConfig&&a.adapterConfig.advisorModel)||"claude-opus-4-6",advisorMaxUses:(a.adapterConfig&&a.adapterConfig.advisorMaxUses)||3,webSearchEnabled:!!(a.adapterConfig&&a.adapterConfig.webSearchEnabled),webSearchMaxUses:(a.adapterConfig&&a.adapterConfig.webSearchMaxUses)||3});
   };
 
   const saveEdit = () => {
@@ -777,7 +1204,7 @@ function AgentsPage({ data, onUpdate }) {
     onUpdate({...data,
       agents:data.agents.map(function(a){
         if(a.id!==editId) return a;
-        return {...a,name:ef.name,title:ef.title,role:ef.role,icon:ef.icon,capabilities:ef.caps,reportsTo:ef.reportsTo||null,budgetMonthlyCents:parseInt(ef.budget)||0,adapterConfig:{...a.adapterConfig,model:ef.model,systemPrompt:ef.systemPrompt||""},updatedAt:now()};
+        return {...a,name:ef.name,title:ef.title,role:ef.role,icon:ef.icon,capabilities:ef.caps,reportsTo:ef.reportsTo||null,budgetMonthlyCents:parseInt(ef.budget)||0,adapterConfig:{...a.adapterConfig,model:ef.model,systemPrompt:ef.systemPrompt||"",advisorEnabled:!!ef.advisorEnabled,advisorModel:ef.advisorModel||"claude-opus-4-6",advisorMaxUses:parseInt(ef.advisorMaxUses)||3,webSearchEnabled:!!ef.webSearchEnabled,webSearchMaxUses:parseInt(ef.webSearchMaxUses)||3},updatedAt:now()};
       }),
       activityLog:[...data.activityLog,{id:uid(),emoji:"✏️",message:(oldAgent?oldAgent.name:"에이전트")+" 수정됨"+(changes.length?" ("+changes.join(", ")+")":""),createdAt:now()}],
     });
@@ -802,7 +1229,7 @@ function AgentsPage({ data, onUpdate }) {
             </select>
             <select className="input" value={f.model} onChange={e=>setF({...f,model:e.target.value})} style={{flex:"1 1 140px"}}>
               <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
-              <option value="claude-sonnet-4-5">Sonnet 4.5 — $3/$15</option>
+              <option value="claude-sonnet-4-6">Sonnet 4.6 — $3/$15</option>
               <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
             </select>
           </div>
@@ -815,6 +1242,18 @@ function AgentsPage({ data, onUpdate }) {
             </select>
           </div>
           <input className="input" placeholder="역량 설명" value={f.caps} onChange={e=>setF({...f,caps:e.target.value})}/>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={f.advisorEnabled} onChange={e=>setF({...f,advisorEnabled:e.target.checked})}/> 🧠 Advisor 활성화</label>
+            {f.advisorEnabled && ADVISOR_COMPATIBLE_EXECUTORS.indexOf(f.model)===-1 && <span style={{fontSize:12,color:"var(--danger)"}}>⚠️ {(MODELS[f.model]||{}).name}은 Advisor 미지원 (Haiku 4.5, Sonnet 4.6, Opus 4.6만 가능)</span>}
+            {f.advisorEnabled&&(<>
+              <select className="input" value={f.advisorModel} onChange={e=>setF({...f,advisorModel:e.target.value})} style={{flex:"0 1 180px",fontSize:12}}>
+                <option value="claude-opus-4-6">Advisor: Opus 4.6</option>
+              </select>
+              <div style={{display:"flex",alignItems:"center",gap:4}}><label className="text-sm text-muted">최대 호출:</label><input className="input" type="number" min={1} max={10} value={f.advisorMaxUses} onChange={e=>setF({...f,advisorMaxUses:e.target.value})} style={{width:60,fontSize:12}}/></div>
+            </>)}
+            <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={f.webSearchEnabled} onChange={e=>setF({...f,webSearchEnabled:e.target.checked})}/> 🔍 웹 검색</label>
+            {f.webSearchEnabled&&(<div style={{display:"flex",alignItems:"center",gap:4}}><label className="text-sm text-muted">검색 횟수:</label><input className="input" type="number" min={1} max={10} value={f.webSearchMaxUses} onChange={e=>setF({...f,webSearchMaxUses:e.target.value})} style={{width:60,fontSize:12}}/></div>)}
+          </div>
           <button className="btn btn-primary" onClick={create}>에이전트 생성</button>
         </div>
       )}
@@ -837,7 +1276,7 @@ function AgentsPage({ data, onUpdate }) {
                   </select>
                   <select className="input" value={ef.model} onChange={e=>setEf({...ef,model:e.target.value})} style={{flex:"1 1 140px"}}>
                     <option value="claude-opus-4-6">Opus 4.6 — $5/$25</option>
-                    <option value="claude-sonnet-4-5">Sonnet 4.5 — $3/$15</option>
+                    <option value="claude-sonnet-4-6">Sonnet 4.6 — $3/$15</option>
                     <option value="claude-haiku-4-5-20251001">Haiku 4.5 — $1/$5</option>
                   </select>
                 </div>
@@ -854,6 +1293,18 @@ function AgentsPage({ data, onUpdate }) {
                   <label style={{fontSize:12,color:"var(--text-secondary)",display:"block",marginBottom:4}}>시스템 프롬프트 (비어있으면 기본값 사용)</label>
                   <textarea className="input" placeholder="에이전트에게 전달할 커스텀 지시사항..." value={ef.systemPrompt} onChange={e=>setEf({...ef,systemPrompt:e.target.value})} rows={3} style={{resize:"vertical"}}/>
                 </div>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={ef.advisorEnabled} onChange={e=>setEf({...ef,advisorEnabled:e.target.checked})}/> 🧠 Advisor 활성화</label>
+                  {ef.advisorEnabled && ADVISOR_COMPATIBLE_EXECUTORS.indexOf(ef.model)===-1 && <span style={{fontSize:12,color:"var(--danger)"}}>⚠️ {(MODELS[ef.model]||{}).name}은 Advisor 미지원</span>}
+                  {ef.advisorEnabled&&(<>
+                    <select className="input" value={ef.advisorModel} onChange={e=>setEf({...ef,advisorModel:e.target.value})} style={{flex:"0 1 180px",fontSize:12}}>
+                      <option value="claude-opus-4-6">Advisor: Opus 4.6</option>
+                    </select>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}><label className="text-sm text-muted">최대 호출:</label><input className="input" type="number" min={1} max={10} value={ef.advisorMaxUses} onChange={e=>setEf({...ef,advisorMaxUses:e.target.value})} style={{width:60,fontSize:12}}/></div>
+                  </>)}
+                  <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer"}}><input type="checkbox" checked={ef.webSearchEnabled} onChange={e=>setEf({...ef,webSearchEnabled:e.target.checked})}/> 🔍 웹 검색</label>
+                  {ef.webSearchEnabled&&(<div style={{display:"flex",alignItems:"center",gap:4}}><label className="text-sm text-muted">검색 횟수:</label><input className="input" type="number" min={1} max={10} value={ef.webSearchMaxUses} onChange={e=>setEf({...ef,webSearchMaxUses:e.target.value})} style={{width:60,fontSize:12}}/></div>)}
+                </div>
                 <div style={{display:"flex",gap:8}}>
                   <button className="btn btn-primary" onClick={saveEdit}>💾 저장</button>
                   <button className="btn" onClick={()=>setEditId(null)}>취소</button>
@@ -865,7 +1316,7 @@ function AgentsPage({ data, onUpdate }) {
                 <span style={{fontSize:18}}>{a.icon||"🤖"}</span>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:13,fontWeight:600}}>{a.name}</span><span className={"badge badge-"+a.status} style={{fontSize:10,padding:"0px 5px"}}>{a.status}</span></div>
-                  <div style={{fontSize:11,color:"var(--text-secondary)"}}>{a.title||a.role}{mg?" · → "+mg.name:""} · <span style={{color:"var(--accent)"}}>{mi.name}</span> · {"$"+(a.spentMonthlyCents/100).toFixed(2)+"/$"+(a.budgetMonthlyCents/100).toFixed(0)}</div>
+                  <div style={{fontSize:11,color:"var(--text-secondary)"}}>{a.title||a.role}{mg?" · → "+mg.name:""} · <span style={{color:"var(--accent)"}}>{mi.name}</span>{a.adapterConfig&&a.adapterConfig.advisorEnabled?" · 🧠"+(MODELS[a.adapterConfig.advisorModel]||{}).name:""}{a.adapterConfig&&a.adapterConfig.webSearchEnabled?" · 🔍":""}  · {"$"+(a.spentMonthlyCents/100).toFixed(2)+"/$"+(a.budgetMonthlyCents/100).toFixed(0)}</div>
                 </div>
                 <button className="btn" style={{padding:"2px 6px",fontSize:10,border:"none",background:"none",color:"var(--accent)"}} onClick={()=>startEdit(a)}>✏️</button>
                 <button className="btn" style={{padding:"2px 6px",fontSize:10,border:"none",background:"none",color:"var(--danger)"}} onClick={()=>del(a.id)}>🗑️</button>
@@ -994,6 +1445,7 @@ function IssuesPage({ data, onUpdate }) {
                         <span className={"priority-dot priority-"+issue.priority} title={issue.priority}/>
                         {agent && <span className="kanban-card-agent">{agent.icon} {agent.name}</span>}
                         {!agent && <span className="kanban-card-agent" style={{color:"var(--text-tertiary)"}}>미배정</span>}
+                        {(issue.comments||[]).length > 0 && <span className="kanban-card-agent" style={{color:"var(--accent)"}}>{"💬" + issue.comments.length}</span>}
                       </div>
                     </div>
                   );
@@ -1017,6 +1469,26 @@ function IssuesPage({ data, onUpdate }) {
             </div>
 
             {selected.description && <div className="text-sm" style={{marginBottom:16,padding:12,background:"var(--bg-secondary)",borderRadius:"var(--radius)",whiteSpace:"pre-wrap"}}>{selected.description}</div>}
+
+            {(selected.comments||[]).length > 0 && (
+              <div style={{marginBottom:16}}>
+                <div className="text-sm font-medium" style={{marginBottom:8}}>{"💬 코멘트 (" + selected.comments.length + ")"}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:200,overflowY:"auto"}}>
+                  {selected.comments.map(function(c) {
+                    var emoji = c.type === "delegation" ? "🔀" : c.type === "review" ? "✅" : "💬";
+                    return (
+                      <div key={c.id} style={{padding:"8px 10px",background:"var(--bg-secondary)",borderRadius:6,borderLeft:"3px solid " + (c.type === "delegation" ? "var(--warning)" : c.type === "review" ? "var(--success)" : "var(--accent)")}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                          <span className="text-sm font-medium">{emoji + " " + c.agentName}</span>
+                          <span style={{fontSize:10,color:"var(--text-tertiary)"}}>{new Date(c.createdAt).toLocaleString("ko-KR")}</span>
+                        </div>
+                        <div style={{fontSize:12,lineHeight:1.4}}>{c.content}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div style={{display:"flex",flexDirection:"column",gap:12}}>
               <div>
@@ -1053,9 +1525,22 @@ function IssuesPage({ data, onUpdate }) {
 function HeartbeatPage({ data, onUpdate }) {
   const [running, setRunning] = useState(null);
   const [lastResult, setLastResult] = useState(null);
-  const [autoMode, setAutoMode] = useState(false);
   const [runPrompt, setRunPrompt] = useState("");
-  const autoRef = React.useRef(null);
+  const [collabProgress, setCollabProgress] = useState(null);
+  const [collabRounds, setCollabRounds] = useState(2);
+  const [collabDelay, setCollabDelay] = useState(10); // rate limit 회피 지연(초)
+
+  // 스케줄링 상태
+  const [scheduleActive, setScheduleActive] = useState(false);
+  const [scheduleMode, setScheduleMode] = useState("collaboration"); // "all" | "collaboration"
+  const [scheduleInterval, setScheduleInterval] = useState(10); // 분 단위
+  const [scheduleRounds, setScheduleRounds] = useState(2);
+  const [nextRunAt, setNextRunAt] = useState(null);
+  const [countdown, setCountdown] = useState("");
+  const [scheduleRunCount, setScheduleRunCount] = useState(0);
+  const scheduleRef = React.useRef(null);
+  const countdownRef = React.useRef(null);
+  const runningRef = React.useRef(false);
 
   const activeAgents = data.agents.filter(function(a) { return a.status !== "paused"; });
   const recentRuns = (data.heartbeatRuns || []).slice(-20).reverse();
@@ -1081,45 +1566,172 @@ function HeartbeatPage({ data, onUpdate }) {
     setRunning(null);
   };
 
-  const toggleAuto = () => {
-    if (autoMode) {
-      if (autoRef.current) clearInterval(autoRef.current);
-      autoRef.current = null;
-      setAutoMode(false);
-    } else {
-      setAutoMode(true);
-      autoRef.current = setInterval(async function() {
-        var freshData = load();
-        if (!freshData) return;
-        var agents = freshData.agents.filter(function(a) { return a.status !== "paused" && a.status !== "working"; });
-        for (var i = 0; i < agents.length; i++) {
-          await executeHeartbeat(agents[i], freshData, function(d) { save(d); onUpdate(d); });
-          freshData = load();
-        }
-      }, 5 * 60 * 1000);
-    }
+  const runCollab = async () => {
+    setRunning("collaboration");
+    setLastResult(null);
+    setCollabProgress({ round: 0, maxRounds: collabRounds, phase: "준비 중", agentName: "", agentIcon: "" });
+    var freshData = load() || data;
+    var result = await runCollaborationHeartbeat(freshData, function(d) { save(d); onUpdate(d); }, collabRounds, function(progress) { setCollabProgress(progress); }, collabDelay);
+    setLastResult(result);
+    setRunning(null);
+    setCollabProgress(null);
   };
 
-  useEffect(function() { return function() { if (autoRef.current) clearInterval(autoRef.current); }; }, []);
+  // 스케줄 실행 함수
+  const executeScheduledRun = async () => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    var freshData = load();
+    if (!freshData) { runningRef.current = false; return; }
+    if (scheduleMode === "collaboration") {
+      setRunning("collaboration");
+      setCollabProgress({ round: 0, maxRounds: scheduleRounds, phase: "준비 중", agentName: "", agentIcon: "" });
+      await runCollaborationHeartbeat(freshData, function(d) { save(d); onUpdate(d); }, scheduleRounds, function(progress) { setCollabProgress(progress); }, collabDelay);
+      setCollabProgress(null);
+    } else {
+      var agents = freshData.agents.filter(function(a) { return a.status !== "paused" && a.status !== "working"; });
+      for (var i = 0; i < agents.length; i++) {
+        setRunning(agents[i].id);
+        var fd = load() || freshData;
+        await executeHeartbeat(agents[i], fd, function(d) { save(d); onUpdate(d); });
+      }
+    }
+    setRunning(null);
+    setScheduleRunCount(function(c) { return c + 1; });
+    runningRef.current = false;
+  };
+
+  const startSchedule = () => {
+    setScheduleActive(true);
+    setScheduleRunCount(0);
+    var intervalMs = scheduleInterval * 60 * 1000;
+    var next = new Date(Date.now() + intervalMs);
+    setNextRunAt(next);
+
+    // 카운트다운 타이머
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(function() {
+      var remaining = next.getTime() - Date.now();
+      if (remaining <= 0) {
+        setCountdown("실행 중...");
+      } else {
+        var mins = Math.floor(remaining / 60000);
+        var secs = Math.floor((remaining % 60000) / 1000);
+        setCountdown(mins + ":" + (secs < 10 ? "0" : "") + secs);
+      }
+    }, 1000);
+
+    // 실행 인터벌
+    if (scheduleRef.current) clearInterval(scheduleRef.current);
+    scheduleRef.current = setInterval(function() {
+      var newNext = new Date(Date.now() + intervalMs);
+      setNextRunAt(newNext);
+      executeScheduledRun();
+    }, intervalMs);
+  };
+
+  const stopSchedule = () => {
+    setScheduleActive(false);
+    setNextRunAt(null);
+    setCountdown("");
+    if (scheduleRef.current) { clearInterval(scheduleRef.current); scheduleRef.current = null; }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+  };
+
+  useEffect(function() { return function() { if (scheduleRef.current) clearInterval(scheduleRef.current); if (countdownRef.current) clearInterval(countdownRef.current); }; }, []);
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
         <div style={{display:"flex",alignItems:"center",gap:12}}>
-          <div className="font-bold" style={{fontSize:18}}>💓 Heartbeat 엔진</div>
-          <span className={"hb-status " + (autoMode ? "hb-active" : "hb-stopped")}>
-            {autoMode && <span className="pulse"/>}
-            {autoMode ? "자동 실행 중 (5분 간격)" : "수동 모드"}
+          <div className="font-bold" style={{fontSize:18}}>Heartbeat 엔진</div>
+          <span className={"hb-status " + (scheduleActive ? "hb-active" : "hb-stopped")}>
+            {scheduleActive && <span className="pulse"/>}
+            {scheduleActive ? "스케줄 실행 중" : "수동 모드"}
           </span>
         </div>
-        <div style={{display:"flex",gap:8}}>
-          <button className="btn" onClick={toggleAuto}>
-            {autoMode ? "⏸ 자동 중지" : "▶️ 자동 시작"}
-          </button>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <button className="btn" style={{fontSize:12,color:"var(--warning)"}} title="모든 에이전트를 idle로 리셋" onClick={function(){
+            var fresh = load() || data;
+            var upd = {...fresh, agents: fresh.agents.map(function(a){return {...a, status: "idle", updatedAt: now()}})};
+            save(upd); onUpdate(upd);
+          }}>🔄 전체 리셋</button>
           <button className="btn btn-primary" onClick={runAll} disabled={running}>
-            {running ? "⏳ 실행 중..." : "🔄 전체 Heartbeat"}
+            {running && running !== "collaboration" ? "실행 중..." : "🔄 전체"}
           </button>
+          {running === "collaboration" ? (
+            <button className="btn" style={{background:"var(--danger)",color:"white",fontWeight:600}} onClick={function(){ COLLAB_ABORT.current = true; }}>
+              ⏹ 중단
+            </button>
+          ) : (
+            <button className="btn" style={{background:"var(--accent-light)",color:"var(--accent)",fontWeight:600}} onClick={runCollab} disabled={running}>
+              🤝 협업
+            </button>
+          )}
+          <select className="input" value={collabRounds} onChange={function(e){setCollabRounds(parseInt(e.target.value))}} style={{width:75,fontSize:12}} disabled={running==="collaboration"}>
+            <option value={1}>1라운드</option>
+            <option value={2}>2라운드</option>
+            <option value={3}>3라운드</option>
+          </select>
+          <select className="input" value={collabDelay} onChange={function(e){setCollabDelay(parseInt(e.target.value))}} style={{width:95,fontSize:12}} disabled={running==="collaboration"} title="에이전트 간 지연 (rate limit 회피)">
+            <option value={0}>지연 없음</option>
+            <option value={5}>⏳ 5초</option>
+            <option value={10}>⏳ 10초</option>
+            <option value={15}>⏳ 15초</option>
+            <option value={20}>⏳ 20초</option>
+          </select>
         </div>
+      </div>
+
+      {/* 스케줄링 패널 */}
+      <div className="card" style={{padding:14,border:scheduleActive?"2px solid var(--success)":"2px solid var(--border)"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:scheduleActive?12:0,flexWrap:"wrap",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:18}}>⏰</span>
+            <div className="font-medium" style={{fontSize:14}}>자동 스케줄</div>
+            {scheduleActive && <span className="badge badge-done" style={{fontSize:10}}>{"실행 "+scheduleRunCount+"회"}</span>}
+          </div>
+          {!scheduleActive ? (
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <select className="input" value={scheduleMode} onChange={function(e){setScheduleMode(e.target.value)}} style={{width:120,fontSize:12}}>
+                <option value="collaboration">🤝 협업 모드</option>
+                <option value="all">🔄 전체 모드</option>
+              </select>
+              {scheduleMode==="collaboration" && (
+                <select className="input" value={scheduleRounds} onChange={function(e){setScheduleRounds(parseInt(e.target.value))}} style={{width:75,fontSize:12}}>
+                  <option value={1}>1라운드</option>
+                  <option value={2}>2라운드</option>
+                  <option value={3}>3라운드</option>
+                </select>
+              )}
+              <select className="input" value={scheduleInterval} onChange={function(e){setScheduleInterval(parseInt(e.target.value))}} style={{width:90,fontSize:12}}>
+                <option value={1}>1분</option>
+                <option value={3}>3분</option>
+                <option value={5}>5분</option>
+                <option value={10}>10분</option>
+                <option value={15}>15분</option>
+                <option value={30}>30분</option>
+                <option value={60}>60분</option>
+              </select>
+              <button className="btn btn-primary" style={{fontSize:12}} onClick={startSchedule} disabled={running}>{"▶️ 시작"}</button>
+            </div>
+          ) : (
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:24,fontWeight:700,color:"var(--accent)",fontVariantNumeric:"tabular-nums"}}>{countdown || "--:--"}</div>
+                <div style={{fontSize:10,color:"var(--text-tertiary)"}}>다음 실행까지</div>
+              </div>
+              <button className="btn" style={{fontSize:12,color:"var(--danger)"}} onClick={stopSchedule}>{"⏹ 중지"}</button>
+            </div>
+          )}
+        </div>
+        {scheduleActive && (
+          <div style={{display:"flex",gap:16,fontSize:12,color:"var(--text-secondary)",flexWrap:"wrap"}}>
+            <span>{"모드: " + (scheduleMode==="collaboration" ? "🤝 협업 "+scheduleRounds+"라운드" : "🔄 전체")}</span>
+            <span>{"간격: " + scheduleInterval + "분"}</span>
+            {nextRunAt && <span>{"다음: " + nextRunAt.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>}
+          </div>
+        )}
       </div>
 
       <div className="card" style={{padding:14}}>
@@ -1127,6 +1739,18 @@ function HeartbeatPage({ data, onUpdate }) {
         <textarea className="input" placeholder="이번 Heartbeat에만 적용할 지시사항 (예: '이슈 우선순위를 재검토해줘', '진행 상황을 상세히 보고해줘')" value={runPrompt} onChange={function(e){setRunPrompt(e.target.value)}} rows={2} style={{resize:"vertical",fontSize:13}}/>
         <div className="text-sm text-muted" style={{marginTop:4}}>비워두면 기본 동작으로 실행됩니다</div>
       </div>
+
+      {collabProgress && (
+        <div className="card" style={{padding:14,border:"2px solid "+(collabProgress.waiting?"var(--warning)":"var(--accent)"),background:collabProgress.waiting?"#fff8e1":"var(--accent-light)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:20}}>{collabProgress.agentIcon || "🤝"}</span>
+            <div>
+              <div className="font-medium" style={{color:collabProgress.waiting?"var(--warning)":"var(--accent)"}}>{"🤝 협업 라운드 " + collabProgress.round + "/" + collabProgress.maxRounds + " — " + (collabProgress.phase === "manager" ? "매니저 검토" : "실무자 실행")}</div>
+              <div className="text-sm">{collabProgress.waiting ? collabProgress.agentName : (collabProgress.agentName ? collabProgress.agentName + " 실행 중..." : "준비 중...")}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="font-medium" style={{marginBottom:12}}>에이전트별 수동 실행</div>
@@ -1137,17 +1761,28 @@ function HeartbeatPage({ data, onUpdate }) {
             var isRunning = running === agent.id;
             var budgetPct = agent.budgetMonthlyCents > 0 ? Math.round(agent.spentMonthlyCents / agent.budgetMonthlyCents * 100) : 0;
             var overBudget = agent.budgetMonthlyCents > 0 && agent.spentMonthlyCents >= agent.budgetMonthlyCents;
+            var pendingApproval = hasPendingApproval(data, agent.id);
+            var blocked = overBudget || pendingApproval;
             return (
               <div key={agent.id} className="table-row">
                 <span style={{fontSize:20}}>{agent.icon || "🤖"}</span>
                 <div style={{flex:1}}>
                   <div className="font-medium">{agent.name}</div>
-                  <div className="text-sm text-muted">{mi.name} · {agent.title || agent.role}</div>
+                  <div className="text-sm text-muted">{mi.name}{agent.adapterConfig&&agent.adapterConfig.advisorEnabled?" + 🧠"+(MODELS[agent.adapterConfig.advisorModel]||{}).name:""} · {agent.title || agent.role}</div>
                 </div>
                 <span className={"badge badge-" + agent.status}>{isRunning ? "실행 중..." : agent.status}</span>
                 <span className="text-sm text-muted">{"$" + (agent.spentMonthlyCents / 100).toFixed(2) + " / $" + (agent.budgetMonthlyCents / 100).toFixed(0)}</span>
+                {agent.status === "error" || agent.status === "working"
+                  ? <button className="btn" style={{padding:"4px 10px",fontSize:11,color:"var(--warning)"}} title="상태를 idle로 리셋" onClick={function(){
+                      var fresh = load() || data;
+                      var upd = {...fresh, agents: fresh.agents.map(function(a){return a.id===agent.id?{...a,status:"idle",updatedAt:now()}:a})};
+                      save(upd); onUpdate(upd);
+                    }}>🔄 리셋</button>
+                  : null}
                 {overBudget
                   ? <span className="badge badge-error">예산 초과</span>
+                  : pendingApproval
+                  ? <span className="badge badge-paused" style={{fontSize:11}}>🛡️ 승인 대기</span>
                   : <button className="btn" style={{padding:"4px 12px",fontSize:12}} onClick={function(){runAgent(agent)}} disabled={isRunning || agent.status === "working"}>
                       {isRunning ? "⏳" : "▶️ 실행"}
                     </button>
@@ -1189,11 +1824,16 @@ function HeartbeatPage({ data, onUpdate }) {
             return (
               <div key={run.id} className="run-card">
                 <div className="run-card-header">
-                  <span>{agent ? agent.icon : "🤖"}</span>
-                  <span className="text-sm font-medium">{agent ? agent.name : "?"}</span>
+                  {run.mode === "collaboration"
+                    ? <span>🤝</span>
+                    : <span>{agent ? agent.icon : "🤖"}</span>
+                  }
+                  <span className="text-sm font-medium">{run.mode === "collaboration" ? "협업 Heartbeat" : (agent ? agent.name : "?")}</span>
                   <span className={"badge badge-" + (run.status === "completed" ? "done" : "error")}>{run.status}</span>
+                  {run.mode === "collaboration" && <span className="badge" style={{fontSize:10,background:"#e0f2fe",color:"#0284c7"}}>{run.rounds + "라운드"}</span>}
                   {run.costCents > 0 && <span className="cost-pill">{"$" + (run.costCents / 100).toFixed(3)}</span>}
                   {run.attempts > 1 && <span className="badge" style={{fontSize:10,background:"var(--warning-light)",color:"var(--warning)"}}>{run.attempts + "회 시도"}</span>}
+                  {run.advisorEnabled && <span className="badge" style={{fontSize:10,background:"#f0e6ff",color:"#7c3aed"}}>{"🧠 " + (MODELS[run.advisorModel]||{}).name + (run.advisorCalls ? " x" + run.advisorCalls : "")}</span>}
                   {run.inputTokens > 0 && <span className="token-pill">{run.inputTokens + "+" + (run.outputTokens || 0)}</span>}
                   <span className="text-sm text-muted" style={{marginLeft:"auto"}}>{new Date(run.startedAt).toLocaleString("ko-KR")}</span>
                 </div>
@@ -1341,7 +1981,7 @@ function CostsPage({ data }) {
     modelMap[e.model].inputTokens += (e.inputTokens || 0);
     modelMap[e.model].outputTokens += (e.outputTokens || 0);
   });
-  var modelColors = { "claude-opus-4-6": "#8b5cf6", "claude-sonnet-4-5": "#6366f1", "claude-haiku-4-5-20251001": "#06b6d4" };
+  var modelColors = { "claude-opus-4-6": "#8b5cf6", "claude-sonnet-4-6": "#6366f1", "claude-haiku-4-5-20251001": "#06b6d4" };
   var modelEntries = Object.keys(modelMap).map(function(k) {
     return { model: k, name: (MODELS[k] || {}).name || k, color: modelColors[k] || "#94a3b8", ...modelMap[k] };
   }).sort(function(a, b) { return b.cost - a.cost; });
@@ -1404,7 +2044,7 @@ function CostsPage({ data }) {
                   <span style={{fontSize:20}}>{ac.agent.icon || "🤖"}</span>
                   <div style={{flex:"1 1 120px",minWidth:0}}>
                     <div className="text-sm font-medium">{ac.agent.name}</div>
-                    <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{mi.name} · {ac.calls}회</div>
+                    <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{mi.name}{ac.agent.adapterConfig&&ac.agent.adapterConfig.advisorEnabled?" + 🧠":""}  · {ac.calls}회</div>
                   </div>
                   <div style={{flex:"1 1 160px",minWidth:120}}>
                     <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
@@ -1482,7 +2122,7 @@ function CostsPage({ data }) {
                 <span style={{fontSize:16}}>{agent ? agent.icon : "🤖"}</span>
                 <div style={{flex:1,minWidth:0}}>
                   <div className="text-sm font-medium">{agent ? agent.name : "알 수 없음"}</div>
-                  <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{mi.name}</div>
+                  <div style={{fontSize:11,color:"var(--text-tertiary)"}}>{mi.name}{ev.advisorEnabled?" + 🧠"+(MODELS[ev.advisorModel]||{}).name:""}</div>
                 </div>
                 <span className="token-pill">{(ev.inputTokens || 0) + "+" + (ev.outputTokens || 0)}</span>
                 <span className="cost-pill">{"$" + ((ev.costCents || 0) / 100).toFixed(3)}</span>
@@ -1538,6 +2178,146 @@ function PasswordManager() {
         <div style={{display:"flex",gap:8}}>
           <button className="btn btn-primary" onClick={changePw}>{hasLock ? "비밀번호 변경" : "비밀번호 설정"}</button>
           {hasLock && <button className="btn" onClick={removePw} style={{color:"var(--danger)"}}>비밀번호 제거</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== Conversations Page ==========
+function ConversationsPage({ data }) {
+  const [selectedIssue, setSelectedIssue] = useState(null);
+  const [filterAgent, setFilterAgent] = useState("");
+
+  // 코멘트가 있는 이슈만 필터링
+  var issuesWithComments = data.issues.filter(function(i) { return (i.comments || []).length > 0; });
+  if (filterAgent) issuesWithComments = issuesWithComments.filter(function(i) { return (i.comments || []).some(function(c) { return c.agentId === filterAgent; }) || i.assigneeAgentId === filterAgent; });
+  issuesWithComments.sort(function(a, b) {
+    var aLast = a.comments && a.comments.length > 0 ? a.comments[a.comments.length-1].createdAt : a.updatedAt;
+    var bLast = b.comments && b.comments.length > 0 ? b.comments[b.comments.length-1].createdAt : b.updatedAt;
+    return bLast > aLast ? 1 : -1;
+  });
+
+  // 전체 타임라인 (모든 이슈의 코멘트를 시간순 정렬)
+  var allComments = [];
+  data.issues.forEach(function(issue) {
+    (issue.comments || []).forEach(function(c) {
+      allComments.push({ ...c, issueId: issue.id, issueIdentifier: issue.identifier, issueTitle: issue.title });
+    });
+  });
+  allComments.sort(function(a, b) { return a.createdAt > b.createdAt ? 1 : -1; });
+  if (filterAgent) allComments = allComments.filter(function(c) { return c.agentId === filterAgent; });
+
+  var activeIssue = selectedIssue ? data.issues.find(function(i) { return i.id === selectedIssue; }) : null;
+  var activeComments = activeIssue ? (activeIssue.comments || []) : allComments.slice(-50);
+
+  // 협업 히트맵: 에이전트별 코멘트 수
+  var agentCommentCount = {};
+  allComments.forEach(function(c) {
+    agentCommentCount[c.agentId] = (agentCommentCount[c.agentId] || 0) + 1;
+  });
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <div className="font-bold" style={{fontSize:18}}>{"conversations" === "conversations" ? "conversations" : ""} 에이전트 대화</div>
+        <select className="input" value={filterAgent} onChange={function(e){setFilterAgent(e.target.value)}} style={{width:180,fontSize:12}}>
+          <option value="">전체 에이전트</option>
+          {data.agents.map(function(a) { return <option key={a.id} value={a.id}>{a.icon + " " + a.name}</option>; })}
+        </select>
+      </div>
+
+      {/* 에이전트별 참여도 */}
+      {Object.keys(agentCommentCount).length > 0 && (
+        <div className="card" style={{padding:14}}>
+          <div className="font-medium" style={{marginBottom:8,fontSize:14}}>참여도</div>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+            {data.agents.map(function(a) {
+              var count = agentCommentCount[a.id] || 0;
+              if (count === 0) return null;
+              return (
+                <div key={a.id} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",background:filterAgent===a.id?"var(--accent-light)":"var(--bg-secondary)",borderRadius:20,cursor:"pointer",border:filterAgent===a.id?"1px solid var(--accent)":"1px solid transparent"}} onClick={function(){setFilterAgent(filterAgent===a.id?"":a.id)}}>
+                  <span style={{fontSize:16}}>{a.icon}</span>
+                  <span className="text-sm font-medium">{a.name}</span>
+                  <span className="badge" style={{fontSize:10,padding:"0 6px"}}>{count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+        {/* 이슈 목록 (왼쪽) */}
+        <div style={{flex:"0 0 280px",display:"flex",flexDirection:"column",gap:6}}>
+          <div className="text-sm font-medium" style={{marginBottom:4}}>{"이슈 (" + issuesWithComments.length + ")"}</div>
+          {issuesWithComments.length === 0
+            ? <div className="card text-sm text-muted" style={{padding:20,textAlign:"center"}}>코멘트가 있는 이슈가 없습니다. 협업 Heartbeat를 실행해보세요!</div>
+            : issuesWithComments.map(function(issue) {
+              var lastComment = issue.comments[issue.comments.length - 1];
+              var agent = data.agents.find(function(a) { return a.id === issue.assigneeAgentId; });
+              var isActive = selectedIssue === issue.id;
+              return (
+                <div key={issue.id} className="card" style={{padding:"8px 12px",cursor:"pointer",border:isActive?"2px solid var(--accent)":"2px solid transparent",transition:"border 0.15s"}} onClick={function(){setSelectedIssue(isActive?null:issue.id)}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                    <span className="text-sm font-medium" style={{color:"var(--accent)"}}>{issue.identifier}</span>
+                    <span className={"badge badge-"+issue.status} style={{fontSize:9}}>{issue.status}</span>
+                  </div>
+                  <div className="text-sm font-medium" style={{marginBottom:4,lineHeight:1.3}}>{issue.title}</div>
+                  {lastComment && (
+                    <div style={{fontSize:11,color:"var(--text-secondary)",display:"flex",gap:4}}>
+                      <span style={{fontWeight:600}}>{lastComment.agentName}:</span>
+                      <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{lastComment.content.substring(0, 60)}</span>
+                    </div>
+                  )}
+                  <div style={{fontSize:10,color:"var(--text-tertiary)",marginTop:4}}>
+                    {agent ? agent.icon + " " + agent.name : "미배정"} {" | " + issue.comments.length + "개 코멘트"}
+                  </div>
+                </div>
+              );
+            })
+          }
+        </div>
+
+        {/* 대화 뷰 (오른쪽) */}
+        <div style={{flex:1,minWidth:300}}>
+          {activeIssue && (
+            <div className="card" style={{padding:14,marginBottom:12}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <span className="font-medium" style={{color:"var(--accent)"}}>{activeIssue.identifier}</span>
+                <span className={"badge badge-"+activeIssue.status}>{activeIssue.status}</span>
+              </div>
+              <div className="font-medium">{activeIssue.title}</div>
+              {activeIssue.description && <div className="text-sm text-muted" style={{marginTop:4}}>{activeIssue.description.substring(0, 150)}</div>}
+            </div>
+          )}
+          {!activeIssue && <div className="text-sm text-muted" style={{marginBottom:12}}>{"전체 타임라인 (최근 " + activeComments.length + "개)"}</div>}
+
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {activeComments.length === 0
+              ? <div className="card text-sm text-muted" style={{padding:40,textAlign:"center"}}>{selectedIssue ? "이 이슈에 코멘트가 없습니다" : "아직 대화가 없습니다. 협업 Heartbeat를 실행해보세요!"}</div>
+              : activeComments.map(function(c) {
+                var agent = data.agents.find(function(a) { return a.id === c.agentId; });
+                var isLeft = agent && data.agents.indexOf(agent) % 2 === 0;
+                var borderColor = c.type === "delegation" ? "var(--warning)" : c.type === "review" ? "var(--success)" : "var(--accent)";
+                var typeLabel = c.type === "delegation" ? "재할당" : c.type === "review" ? "리뷰" : "";
+                return (
+                  <div key={c.id} style={{display:"flex",flexDirection:"column",alignItems:isLeft?"flex-start":"flex-end",maxWidth:"85%",alignSelf:isLeft?"flex-start":"flex-end"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                      <span style={{fontSize:14}}>{agent ? agent.icon : "?"}</span>
+                      <span className="text-sm font-medium">{c.agentName}</span>
+                      {typeLabel && <span className="badge" style={{fontSize:9,padding:"0 5px"}}>{typeLabel}</span>}
+                      {c.issueIdentifier && !activeIssue && <span style={{fontSize:10,color:"var(--accent)",fontWeight:600}}>{c.issueIdentifier}</span>}
+                      <span style={{fontSize:10,color:"var(--text-tertiary)"}}>{new Date(c.createdAt).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}</span>
+                    </div>
+                    <div style={{padding:"8px 12px",background:isLeft?"var(--bg-secondary)":"var(--accent-light)",borderRadius:12,borderTopLeftRadius:isLeft?2:12,borderTopRightRadius:isLeft?12:2,borderLeft:"3px solid "+borderColor,fontSize:13,lineHeight:1.5,maxWidth:"100%",wordBreak:"break-word"}}>
+                      {c.content}
+                    </div>
+                  </div>
+                );
+              })
+            }
+          </div>
         </div>
       </div>
     </div>
@@ -2043,6 +2823,7 @@ function App() {
     goals: <GoalsPage data={data} onUpdate={setData}/>,
     approvals: <ApprovalsPage data={data} onUpdate={setData}/>,
     costs: <CostsPage data={data}/>,
+    conversations: <ConversationsPage data={data}/>,
     routines: <HeartbeatPage data={data} onUpdate={setData}/>,
     activity: <ActivityPage data={data}/>,
     settings: <SettingsPage data={data} onUpdate={setData}/>,
