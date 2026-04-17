@@ -383,28 +383,46 @@ function buildAgentPrompt(agent, issues, data) {
   // 지시사항
   prompt += "\n## 지시사항\n";
   prompt += "할당된 이슈를 검토하고, 각 이슈에 대해 다음 JSON 형식으로 응답해주세요:\n";
-  prompt += '```json\n{\n  "actions": [\n    {\n      "issueId": "이슈ID",\n      "action": "start|complete|comment|reassign",\n      "comment": "작업 내용이나 결과 설명",\n      "targetAgentId": "재할당 대상 에이전트ID (reassign시에만)"\n    }\n  ],\n  "summary": "전체 업무 요약"\n}\n```\n';
+  prompt += '```json\n{\n  "actions": [\n    {\n      "issueId": "이슈ID",\n      "action": "start|complete|comment|reassign|artifact",\n      "comment": "작업 내용이나 결과 설명",\n      "targetAgentId": "재할당 대상 에이전트ID (reassign시에만)",\n      "artifactType": "html|css|js|json|markdown|code|text (artifact시에만)",\n      "artifactTitle": "파일명.확장자 (artifact시에만)",\n      "artifactContent": "파일 전체 내용 문자열 (artifact시에만)",\n      "artifactDescription": "짧은 설명 (artifact시 선택)"\n    }\n  ],\n  "summary": "전체 업무 요약"\n}\n```\n';
   prompt += "- action이 'start'면 이슈를 '진행 중'으로 변경\n";
   prompt += "- action이 'complete'면 이슈를 '완료'로 변경\n";
   prompt += "- action이 'comment'면 코멘트만 추가 (팀원과 소통용)\n";
   prompt += "- action이 'reassign'면 이슈를 다른 팀원에게 재할당 (targetAgentId 필수)\n";
+  prompt += "- action이 'artifact'면 실제 결과물 파일을 생성 (랜딩페이지 HTML, 데이터 JSON, 문서 MD 등)\n";
   prompt += "- 팀원 이슈에 코멘트를 남기거나 재할당할 수 있습니다\n";
   prompt += "- 할당된 이슈가 없으면 summary만 작성\n";
 
+  // 산출물 우선 원칙 (NEW)
+  prompt += "\n## 🔥 산출물 우선 원칙\n";
+  prompt += "전략/기획 논의가 충분히 이뤄진 이슈는 **즉시 artifact 액션으로 실제 결과물을 제출하세요**.\n\n";
+  prompt += "**이슈 유형별 권장 산출물:**\n";
+  prompt += "- 랜딩 페이지/마케팅 사이트 → `artifactType: \"html\"`, 완전한 `<!DOCTYPE html>...` 포함\n";
+  prompt += "- 디자인 시스템/UI 컴포넌트 → `artifactType: \"html\"` (HTML+CSS 인라인) 또는 `\"css\"`\n";
+  prompt += "- API 스펙/데이터 스키마 → `artifactType: \"json\"`\n";
+  prompt += "- 기술 문서/사양서/기획서 → `artifactType: \"markdown\"`\n";
+  prompt += "- 스크립트/로직 코드 → `artifactType: \"js\"` 또는 `\"code\"`\n\n";
+  prompt += "**금지 사항:**\n";
+  prompt += "- \"코드 작성은 개발팀의 일입니다\" 같은 변명\n";
+  prompt += "- 추상적 설명만 남기고 실제 산출물 없이 complete\n";
+  prompt += "- 전체 코드 대신 일부만 제시 (완전한 파일을 제출하세요)\n\n";
+  prompt += "**artifact + complete를 같은 턴에 실행 가능**: 먼저 artifact로 파일 생성, 바로 이어서 complete로 마감.\n\n";
+
   // 단호한 의사결정 프레임워크
-  prompt += "\n## 의사결정 원칙\n";
+  prompt += "## 의사결정 원칙\n";
   prompt += "당신은 신속하고 단호하게 행동하는 실행가입니다. 망설이지 마세요.\n\n";
   prompt += "**완료(complete) 처리 기준** — 다음 중 하나만 만족해도 즉시 complete 처리하세요:\n";
   prompt += "1. 이슈에 대한 전략/계획이 이미 충분히 논의되어 실행 방향이 명확하다\n";
   prompt += "2. 당신이 책임질 수 있는 의사결정을 내렸다 (세부 실행은 다음 단계)\n";
   prompt += "3. 이슈 코멘트가 5개 이상이고 다음 단계로 넘어갈 수 있다\n";
-  prompt += "4. \"완벽한 계획\"보다 \"결정된 방향\"이 중요하다 — 실행하면서 수정한다\n\n";
+  prompt += "4. 실제 산출물(artifact)을 제출했다 — 이 경우 반드시 complete\n";
+  prompt += "5. \"완벽한 계획\"보다 \"결정된 방향\"이 중요하다 — 실행하면서 수정한다\n\n";
   prompt += "**절대 피해야 할 행동:**\n";
   prompt += "- \"아직 검토가 더 필요하다\"는 반복적 유보\n";
   prompt += "- 타 이슈 완료를 기다리며 무한 대기\n";
-  prompt += "- 명확한 결정 없이 길게 코멘트만 남기는 것\n\n";
-  prompt += "**우선순위:** complete > reassign > start > comment\n";
-  prompt += "이미 충분히 다뤄진 이슈는 바로 complete 하세요. 이것이 팀의 진행을 가속합니다.\n";
+  prompt += "- 명확한 결정 없이 길게 코멘트만 남기는 것\n";
+  prompt += "- 코멘트로만 설명하고 artifact 미제출\n\n";
+  prompt += "**우선순위:** artifact > complete > reassign > start > comment\n";
+  prompt += "이미 충분히 다뤄진 이슈는 **artifact 생성 + complete**로 즉시 마감하세요.\n";
 
   if (agent.adapterConfig && agent.adapterConfig.webSearchEnabled) {
     prompt += "\n- 웹 검색 도구가 활성화되어 있습니다. 필요 시 실제 검색을 통해 구체적 근거를 확보하세요\n";
@@ -430,15 +448,26 @@ function parseAgentResponse(text) {
 function validateActions(actions, issues, agents) {
   var validActions = [];
   var violations = [];
-  var validStatuses = ["start", "complete", "comment", "reassign"];
+  var validStatuses = ["start", "complete", "comment", "reassign", "artifact"];
+  var validArtifactTypes = ["html", "css", "js", "json", "markdown", "code", "text"];
   (actions || []).forEach(function(act) {
     if (!act.issueId || !act.action) {
       violations.push("액션에 issueId 또는 action이 누락됨");
       return;
     }
     if (validStatuses.indexOf(act.action) === -1) {
-      violations.push("허용되지 않는 action: " + act.action + " (허용: start, complete, comment, reassign)");
+      violations.push("허용되지 않는 action: " + act.action + " (허용: start, complete, comment, reassign, artifact)");
       return;
+    }
+    if (act.action === "artifact") {
+      if (!act.artifactType || !act.artifactTitle || !act.artifactContent) {
+        violations.push(act.issueId + ": artifact는 artifactType, artifactTitle, artifactContent 필수");
+        return;
+      }
+      if (validArtifactTypes.indexOf(act.artifactType) === -1) {
+        violations.push(act.issueId + ": 허용되지 않는 artifactType: " + act.artifactType);
+        return;
+      }
     }
     var issue = issues.find(function(i) { return i.id === act.issueId || i.identifier === act.issueId; });
     if (!issue) {
@@ -535,7 +564,8 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
 
       // 웹 검색 활성 시 max_tokens 자동 증가 (검색 결과가 토큰을 많이 소모)
       var baseMaxTokens = (agent.adapterConfig && agent.adapterConfig.maxTokens) || 2048;
-      var effectiveMaxTokens = webSearchEnabled ? Math.max(baseMaxTokens, 8192) : baseMaxTokens;
+      // 아티팩트/웹검색 활성 시 토큰 한도 상향
+      var effectiveMaxTokens = Math.max(baseMaxTokens, 8192);
       var response = await callClaudeAPI(data.settings.apiKey, model, systemPrompt, currentMessage, effectiveMaxTokens, advisorTools);
       var responseText = response.content.map(function(c) { return c.text || ""; }).join("\n");
       var usage = response.usage || {};
@@ -556,7 +586,7 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
       if (!parsed._parseOk && parsed.actions.length === 0) {
         if (attemptCount < MAX_ATTEMPTS) {
           allLogs.push({ id: uid(), emoji: "🔄", message: agent.icon + " " + agent.name + " [하네스] 응답 파싱 실패, 재시도 " + attemptCount + "/" + MAX_ATTEMPTS, createdAt: now() });
-          currentMessage = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 다음 형식으로 응답하세요:\n```json\n{\"actions\": [{\"issueId\": \"이슈ID\", \"action\": \"start|complete|comment|reassign\", \"comment\": \"설명\", \"targetAgentId\": \"재할당 시에만\"}], \"summary\": \"요약\"}\n```\n\n" + userMessage;
+          currentMessage = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 다음 형식으로 응답하세요:\n```json\n{\"actions\": [{\"issueId\": \"이슈ID\", \"action\": \"start|complete|comment|reassign|artifact\", \"comment\": \"설명\", \"targetAgentId\": \"재할당 시\", \"artifactType\": \"html/css/js/json/markdown/code/text\", \"artifactTitle\": \"파일명\", \"artifactContent\": \"파일 전체 내용\"}], \"summary\": \"요약\"}\n```\n\n" + userMessage;
           continue;
         }
         allLogs.push({ id: uid(), emoji: "⚠️", message: agent.icon + " " + agent.name + " [하네스] 파싱 실패 " + MAX_ATTEMPTS + "회 — 원본 응답 저장", createdAt: now() });
@@ -587,18 +617,32 @@ async function executeHeartbeat(agent, data, onUpdate, runPrompt) {
           if (issue.id === act.issueId || issue.identifier === act.issueId) {
             var changes = { updatedAt: now() };
             var comments = issue.comments ? [...issue.comments] : [];
+            var artifacts = issue.artifacts ? [...issue.artifacts] : [];
             if (act.action === "start") { changes.status = "in_progress"; changes.startedAt = now(); }
             else if (act.action === "complete") { changes.status = "done"; changes.completedAt = now(); }
             else if (act.action === "reassign") {
               changes.assigneeAgentId = act._resolvedTargetId || act.targetAgentId;
               comments.push({ id: uid(), agentId: agent.id, agentName: agent.name, content: "→ " + (act._resolvedTargetName || act.targetAgentId) + "에게 재할당" + (act.comment ? ": " + act.comment : ""), type: "delegation", createdAt: now() });
             }
-            if (act.comment && act.action !== "reassign") {
+            else if (act.action === "artifact") {
+              artifacts.push({
+                id: uid(), agentId: agent.id, agentName: agent.name,
+                type: act.artifactType, title: act.artifactTitle,
+                content: act.artifactContent, description: act.artifactDescription || "",
+                createdAt: now()
+              });
+              // 타임라인에 노출되도록 trace 코멘트 추가
+              comments.push({ id: uid(), agentId: agent.id, agentName: agent.name,
+                content: "📎 아티팩트 생성: " + act.artifactTitle + (act.artifactDescription ? " — " + act.artifactDescription : ""),
+                type: "artifact", createdAt: now() });
+            }
+            if (act.comment && act.action !== "reassign" && act.action !== "artifact") {
               comments.push({ id: uid(), agentId: agent.id, agentName: agent.name, content: act.comment, type: act.action === "complete" ? "review" : "comment", createdAt: now() });
             }
             changes.comments = comments;
-            var emoji = act.action === "complete" ? "✅" : act.action === "reassign" ? "🔀" : act.action === "start" ? "🔄" : "💬";
-            var label = act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : act.action === "reassign" ? "→" + (act._resolvedTargetName || "") + " 재할당" : "코멘트";
+            changes.artifacts = artifacts;
+            var emoji = act.action === "complete" ? "✅" : act.action === "reassign" ? "🔀" : act.action === "artifact" ? "📎" : act.action === "start" ? "🔄" : "💬";
+            var label = act.action === "complete" ? "완료" : act.action === "start" ? "진행 중" : act.action === "reassign" ? ("→" + (act._resolvedTargetName || "") + " 재할당") : act.action === "artifact" ? ("아티팩트 " + (act.artifactTitle || "")) : "코멘트";
             actionLogs.push({ id: uid(), emoji: emoji, message: agent.icon + " " + agent.name + ": " + (issue.identifier || "") + " " + label + (act.comment ? " — " + act.comment.substring(0, 80) : ""), createdAt: now() });
             return { ...issue, ...changes };
           }
@@ -1462,6 +1506,7 @@ function IssuesPage({ data, onUpdate }) {
                         {agent && <span className="kanban-card-agent">{agent.icon} {agent.name}</span>}
                         {!agent && <span className="kanban-card-agent" style={{color:"var(--text-tertiary)"}}>미배정</span>}
                         {(issue.comments||[]).length > 0 && <span className="kanban-card-agent" style={{color:"var(--accent)"}}>{"💬" + issue.comments.length}</span>}
+                        {(issue.artifacts||[]).length > 0 && <span className="kanban-card-agent" style={{color:"var(--success)"}}>{"📎" + issue.artifacts.length}</span>}
                       </div>
                     </div>
                   );
@@ -1485,6 +1530,34 @@ function IssuesPage({ data, onUpdate }) {
             </div>
 
             {selected.description && <div className="text-sm" style={{marginBottom:16,padding:12,background:"var(--bg-secondary)",borderRadius:"var(--radius)",whiteSpace:"pre-wrap"}}>{selected.description}</div>}
+
+            {(selected.artifacts||[]).length > 0 && (
+              <div style={{marginBottom:16}}>
+                <div className="text-sm font-medium" style={{marginBottom:8}}>{"📎 아티팩트 (" + selected.artifacts.length + ")"}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:360,overflowY:"auto"}}>
+                  {selected.artifacts.map(function(a) {
+                    return (
+                      <div key={a.id} style={{padding:10,background:"var(--bg-secondary)",borderRadius:6,borderLeft:"3px solid var(--success)"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,flexWrap:"wrap",gap:4}}>
+                          <span className="text-sm font-medium">{artifactEmoji(a.type) + " " + a.title}</span>
+                          <span style={{fontSize:10,color:"var(--text-tertiary)"}}>{a.agentName + " · " + new Date(a.createdAt).toLocaleString("ko-KR")}</span>
+                        </div>
+                        {a.description && <div style={{fontSize:11,color:"var(--text-tertiary)",marginBottom:6}}>{a.description}</div>}
+                        <details style={{fontSize:11}}>
+                          <summary style={{cursor:"pointer",color:"var(--text-tertiary)",userSelect:"none"}}>{"내용 미리보기 (" + a.content.length + "자)"}</summary>
+                          <pre style={{maxHeight:200,overflow:"auto",background:"var(--bg-primary)",padding:8,borderRadius:4,marginTop:6,fontSize:10,whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{a.content.substring(0,2000) + (a.content.length > 2000 ? "\n... (총 " + a.content.length + "자, 다운로드하여 전체 확인)" : "")}</pre>
+                        </details>
+                        <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                          <button className="btn btn-primary" style={{padding:"4px 10px",fontSize:11}} onClick={function(){downloadArtifact(a)}}>⬇ 다운로드</button>
+                          {a.type === "html" && <button className="btn" style={{padding:"4px 10px",fontSize:11}} onClick={function(){previewHtmlArtifact(a)}}>🔍 HTML 미리보기</button>}
+                          {a.type === "markdown" && <button className="btn" style={{padding:"4px 10px",fontSize:11}} onClick={function(){previewHtmlArtifact(a)}}>📖 렌더링</button>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {(selected.comments||[]).length > 0 && (
               <div style={{marginBottom:16}}>
@@ -2306,6 +2379,57 @@ async function generateSummaryReport(data, apiKey) {
   md += "- **협업 비용**: $" + (totalCost/100).toFixed(2) + "\n\n";
   md += "_Generated by JWAY Paperclip v" + VER + " (요약 by Sonnet 4.6)_\n";
   return md;
+}
+
+// ========== 아티팩트 헬퍼 ==========
+var ARTIFACT_MIME = {
+  html: "text/html",
+  css: "text/css",
+  js: "application/javascript",
+  json: "application/json",
+  markdown: "text/markdown",
+  code: "text/plain",
+  text: "text/plain",
+};
+function artifactEmoji(t) {
+  return ({ html: "🌐", css: "🎨", js: "⚡", json: "📋", markdown: "📝", code: "💻", text: "📄" })[t] || "📎";
+}
+function downloadArtifact(a) {
+  var mime = (ARTIFACT_MIME[a.type] || "text/plain") + ";charset=utf-8";
+  var blob = new Blob([a.content], { type: mime });
+  var url = URL.createObjectURL(blob);
+  var el = document.createElement("a");
+  el.href = url;
+  el.download = a.title || "artifact";
+  document.body.appendChild(el);
+  el.click();
+  document.body.removeChild(el);
+  URL.revokeObjectURL(url);
+}
+function previewHtmlArtifact(a) {
+  var content = a.type === "markdown" ? renderMarkdownLite(a.content) : a.content;
+  var blob = new Blob([content], { type: "text/html;charset=utf-8" });
+  var url = URL.createObjectURL(blob);
+  var w = window.open(url, "_blank", "width=1200,height=800");
+  if (!w) { alert("팝업이 차단되었습니다. 브라우저에서 팝업 허용 후 다시 시도하거나 다운로드를 이용하세요."); }
+}
+// 간단한 마크다운 렌더러 (미리보기용, 완벽하지 않음)
+function renderMarkdownLite(md) {
+  var esc = function(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); };
+  var html = esc(md);
+  html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>");
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, function(m) { return "<ul>" + m + "</ul>"; });
+  html = html.replace(/\n\n/g, "</p><p>");
+  html = "<p>" + html + "</p>";
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Preview</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:800px;margin:40px auto;padding:20px;line-height:1.6;color:#1f2937}h1{border-bottom:2px solid #6366f1;padding-bottom:8px}h2{color:#6366f1;margin-top:32px}h3{color:#4f46e5}code{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:0.9em}pre{background:#1f2937;color:#f3f4f6;padding:16px;border-radius:8px;overflow-x:auto}pre code{background:transparent;color:inherit;padding:0}ul{padding-left:20px}a{color:#6366f1}</style></head><body>' + html + '</body></html>';
 }
 
 function downloadMarkdown(content, filename) {
