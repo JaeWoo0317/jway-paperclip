@@ -2898,6 +2898,167 @@ function SettingsPage({ data, onUpdate }) {
     input.click();
   };
 
+  // 템플릿 export: 에이전트 + 이슈 + 목표만 (비용/로그/아티팩트 제외)
+  const exportTemplate = () => {
+    var name = prompt("템플릿 이름을 입력하세요:", "JWAY Template");
+    if (!name) return;
+    var description = prompt("템플릿 설명 (선택):", "");
+    var tpl = {
+      templateVersion: "1.0",
+      templateName: name,
+      templateDescription: description || "",
+      templateExportedAt: now(),
+      templateExportedFromVersion: VER,
+      // 에이전트: ID/상태/비용 제외, 역할/프롬프트/역량만
+      agents: data.agents.map(function(a) {
+        return {
+          name: a.name, role: a.role, title: a.title, icon: a.icon,
+          reportsToName: a.reportsTo ? (data.agents.find(function(x){return x.id===a.reportsTo})||{}).name : null,
+          capabilities: a.capabilities,
+          adapterConfig: { ...a.adapterConfig, systemPrompt: a.adapterConfig ? a.adapterConfig.systemPrompt : "" },
+          budgetMonthlyCents: a.budgetMonthlyCents,
+        };
+      }),
+      // 목표: 상태/진행률 초기화, 담당자는 이름으로 매핑
+      goals: (data.goals || []).map(function(g) {
+        var assignee = g.assigneeAgentId ? (data.agents.find(function(x){return x.id===g.assigneeAgentId})||{}).name : null;
+        return {
+          title: g.title, description: g.description, level: g.level,
+          assigneeAgentName: assignee, targetDate: g.targetDate,
+        };
+      }),
+      // 이슈: 상태/코멘트/아티팩트 초기화
+      issues: (data.issues || []).map(function(i) {
+        var assignee = i.assigneeAgentId ? (data.agents.find(function(x){return x.id===i.assigneeAgentId})||{}).name : null;
+        var goalTitle = i.goalId ? (data.goals.find(function(g){return g.id===i.goalId})||{}).title : null;
+        return {
+          title: i.title, description: i.description,
+          priority: i.priority, assigneeAgentName: assignee,
+          goalTitle: goalTitle,
+        };
+      }),
+      // 프로젝트 메타
+      project: data.projects[0] ? { name: data.projects[0].name, description: data.projects[0].description } : null,
+    };
+    var blob = new Blob([JSON.stringify(tpl, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "jway-template-" + name.replace(/[^\w가-힣]/g, "_") + ".json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 템플릿 import: 기존 데이터와 합치거나 교체
+  const importTemplate = () => {
+    var input = document.createElement("input"); input.type = "file"; input.accept = ".json";
+    input.onchange = function(e) {
+      var file = e.target.files[0]; if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        try {
+          var tpl = JSON.parse(ev.target.result);
+          if (!tpl.templateVersion || !tpl.agents) {
+            alert("유효한 JWAY 템플릿 파일이 아닙니다.");
+            return;
+          }
+          var mode = confirm("템플릿 '" + (tpl.templateName || "이름 없음") + "'을 가져옵니다.\n\n" + (tpl.templateDescription || "") + "\n\n에이전트 " + tpl.agents.length + "명, 목표 " + (tpl.goals||[]).length + "개, 이슈 " + (tpl.issues||[]).length + "개\n\n확인을 누르면 기존 데이터에 추가됩니다.");
+          if (!mode) return;
+
+          var co = data.companies[0];
+          var coId = co ? co.id : "";
+          var issueNum = co ? co.issueCounter || 0 : 0;
+          var prefix = co ? co.issuePrefix || "JWAY" : "JWAY";
+
+          // 1. 에이전트 생성 (이름 → ID 맵 만들기)
+          var nameToId = {};
+          var newAgents = tpl.agents.map(function(tpla) {
+            var id = uid();
+            nameToId[tpla.name] = id;
+            return {
+              id: id, companyId: coId, name: tpla.name, role: tpla.role || "general",
+              title: tpla.title || "", icon: tpla.icon || "🤖", status: "idle",
+              reportsTo: null, // 2단계에서 설정
+              capabilities: tpla.capabilities || "",
+              adapterType: "claude_api",
+              adapterConfig: {
+                model: (tpla.adapterConfig && tpla.adapterConfig.model) || "claude-haiku-4-5-20251001",
+                systemPrompt: (tpla.adapterConfig && tpla.adapterConfig.systemPrompt) || "",
+                maxTokens: 8192,
+                advisorEnabled: !!(tpla.adapterConfig && tpla.adapterConfig.advisorEnabled),
+                advisorModel: (tpla.adapterConfig && tpla.adapterConfig.advisorModel) || "claude-opus-4-6",
+                advisorMaxUses: (tpla.adapterConfig && tpla.adapterConfig.advisorMaxUses) || 3,
+                webSearchEnabled: !!(tpla.adapterConfig && tpla.adapterConfig.webSearchEnabled),
+                webSearchMaxUses: (tpla.adapterConfig && tpla.adapterConfig.webSearchMaxUses) || 3,
+              },
+              runtimeConfig: {},
+              budgetMonthlyCents: tpla.budgetMonthlyCents || 2000,
+              spentMonthlyCents: 0,
+              permissions: { canCreateIssues: true, canHireAgents: false },
+              lastHeartbeatAt: null, createdAt: now(), updatedAt: now(),
+              _tplReportsToName: tpla.reportsToName || null,
+            };
+          });
+          // reportsTo 매핑
+          newAgents.forEach(function(a) {
+            if (a._tplReportsToName && nameToId[a._tplReportsToName]) a.reportsTo = nameToId[a._tplReportsToName];
+            delete a._tplReportsToName;
+          });
+
+          // 2. 프로젝트 생성
+          var newProject = null;
+          if (tpl.project) {
+            newProject = { id: uid(), companyId: coId, name: tpl.project.name, description: tpl.project.description || "", status: "active", createdAt: now(), updatedAt: now() };
+          }
+
+          // 3. 목표 생성 (이름 → ID 맵)
+          var goalTitleToId = {};
+          var newGoals = (tpl.goals || []).map(function(tplg) {
+            var id = uid();
+            goalTitleToId[tplg.title] = id;
+            return {
+              id: id, companyId: coId, title: tplg.title, description: tplg.description || "",
+              level: tplg.level || "company",
+              assigneeAgentId: tplg.assigneeAgentName ? nameToId[tplg.assigneeAgentName] || null : null,
+              targetDate: tplg.targetDate || null, status: "active", progress: 0,
+              createdAt: now(), updatedAt: now(),
+            };
+          });
+
+          // 4. 이슈 생성
+          var newIssues = (tpl.issues || []).map(function(tpli) {
+            issueNum++;
+            return {
+              id: uid(), companyId: coId,
+              projectId: newProject ? newProject.id : null,
+              goalId: tpli.goalTitle ? goalTitleToId[tpli.goalTitle] || null : null,
+              parentId: null, title: tpli.title, description: tpli.description || "",
+              status: "todo", priority: tpli.priority || "medium",
+              assigneeAgentId: tpli.assigneeAgentName ? nameToId[tpli.assigneeAgentName] || null : null,
+              issueNumber: issueNum, identifier: prefix + "-" + issueNum,
+              originKind: "template", createdAt: now(), updatedAt: now(),
+              startedAt: null, completedAt: null,
+            };
+          });
+
+          var updatedCo = co ? { ...co, issueCounter: issueNum } : co;
+          onUpdate({
+            ...data,
+            agents: [...data.agents, ...newAgents],
+            projects: newProject ? [...data.projects, newProject] : data.projects,
+            goals: [...data.goals, ...newGoals],
+            issues: [...data.issues, ...newIssues],
+            companies: co ? data.companies.map(function(c){return c.id===coId?updatedCo:c}) : data.companies,
+            activityLog: [...data.activityLog, { id: uid(), emoji: "📦", message: "템플릿 \"" + (tpl.templateName || "이름 없음") + "\" 가져옴 — 에이전트 " + newAgents.length + "명, 이슈 " + newIssues.length + "개", createdAt: now() }],
+          });
+          alert("✅ 템플릿을 성공적으로 가져왔습니다!\n\n에이전트: " + newAgents.length + "명\n목표: " + newGoals.length + "개\n이슈: " + newIssues.length + "개");
+        } catch (err) { alert("템플릿 가져오기 실패: " + err.message); }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
   const seedTeam = () => {
     if (data.agents.length > 0 && !confirm("기존 에이전트가 있습니다. 추가로 스타트업 팀을 생성하시겠습니까?")) return;
     var coId = co ? co.id : "";
@@ -2990,11 +3151,20 @@ function SettingsPage({ data, onUpdate }) {
       </div>
 
       <div className="card">
+        <div className="font-medium" style={{marginBottom:8}}>📦 템플릿</div>
+        <div className="text-sm text-muted" style={{marginBottom:12}}>에이전트 + 이슈 + 목표를 템플릿으로 저장하거나 불러옵니다 (비용/로그/아티팩트 제외)</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button className="btn btn-primary" onClick={exportTemplate}>📦 현재 팀을 템플릿으로 저장</button>
+          <button className="btn" onClick={importTemplate}>📥 템플릿 가져오기</button>
+        </div>
+      </div>
+
+      <div className="card">
         <div className="font-medium" style={{marginBottom:16}}>데이터 관리</div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           <button className="btn btn-primary" onClick={seedTeam}>🚀 스타트업 팀 초기화</button>
-          <button className="btn" onClick={exportData}>📥 데이터 백업 (JSON)</button>
-          <button className="btn" onClick={importData}>📤 데이터 가져오기</button>
+          <button className="btn" onClick={exportData}>📥 전체 백업 (JSON)</button>
+          <button className="btn" onClick={importData}>📤 백업 가져오기</button>
           <button className="btn" onClick={resetSpent} style={{color:"var(--warning)"}}>🔄 월간 비용 초기화</button>
           <button className="btn" onClick={clearAll} style={{color:"var(--danger)"}}>🗑️ 전체 데이터 삭제</button>
         </div>
