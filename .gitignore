@@ -12,3 +12,10 @@ Thumbs.db
 # Temporary exports (keep examples/ tracked)
 *-report-*.md
 !examples/*-report-*.md
+
+# Downloaded artifacts/zips from app (test outputs)
+*.zip
+jway-paperclip-summary-*.md
+landing-page.html
+!examples/landing-page-*.html
+!templates/*.json
