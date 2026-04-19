@@ -36,6 +36,17 @@ header{padding:20px 0;border-bottom:1px solid #e5e7eb;position:sticky;top:0;back
 .btn-secondary:hover{border-color:#6366f1;color:#6366f1}
 .hero-meta{margin-top:24px;font-size:13px;color:#9ca3af}
 
+/* Cost Notice */
+.cost-notice{background:#fffbeb;border-top:2px solid #f59e0b;border-bottom:2px solid #f59e0b;padding:40px 20px}
+.cost-notice .container{max-width:900px;margin:0 auto}
+.cost-notice h2{font-size:22px;color:#92400e;margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.cost-notice-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:16px}
+.cost-notice-item{background:white;padding:20px;border-radius:10px;border:1px solid #fcd34d}
+.cost-notice-item h4{font-size:15px;color:#92400e;margin-bottom:8px}
+.cost-notice-item p{font-size:13px;color:#78350f;line-height:1.7}
+.cost-notice-item .price-tag{display:inline-block;padding:4px 10px;background:#fef3c7;border-radius:6px;font-weight:700;color:#92400e;font-size:13px;margin-top:8px}
+@media(max-width:768px){.cost-notice-grid{grid-template-columns:1fr}}
+
 /* Problem */
 .section{padding:80px 0}
 .section-title{text-align:center;font-size:36px;font-weight:800;margin-bottom:16px;letter-spacing:-0.5px}
@@ -151,6 +162,41 @@ footer a:hover{color:#6366f1}
   </div>
 </section>
 
+<section class="cost-notice">
+  <div class="container">
+    <h2>💡 비용 안내 — 꼭 읽어주세요</h2>
+    <p style="color:#78350f;font-size:15px;line-height:1.7">
+      JWAY Paperclip은 <strong>오픈소스 소프트웨어</strong>이며, 저희 서버는 운영하지 않습니다.<br/>
+      모든 AI 에이전트 실행은 <strong>사용자 본인의 Anthropic API 키</strong>를 통해 직접 이뤄집니다.
+    </p>
+    <div class="cost-notice-grid">
+      <div class="cost-notice-item">
+        <h4>🧩 우리가 제공하는 것</h4>
+        <p>오픈소스 앱 + 검증된 에이전트 프롬프트 + 템플릿 + 컨설팅</p>
+        <span class="price-tag">소프트웨어 가치</span>
+      </div>
+      <div class="cost-notice-item">
+        <h4>💳 사용자가 부담하는 것</h4>
+        <p>Anthropic API 사용료 (실제 AI 호출 비용). 본인이 console.anthropic.com에서 결제</p>
+        <span class="price-tag">협업 1회 ≈ $1~2</span>
+      </div>
+      <div class="cost-notice-item">
+        <h4>🔒 데이터는 어디에?</h4>
+        <p>사용자 브라우저(localStorage)에만 저장. 저희 서버로 전송되지 않습니다. API 키도 브라우저에만 저장</p>
+        <span class="price-tag">100% 로컬</span>
+      </div>
+      <div class="cost-notice-item">
+        <h4>📊 월 예상 비용</h4>
+        <p>프로젝트 1개 (협업 10회 실행) 기준 월 <strong>$10 ~ $20</strong>. 사용 안 하면 $0</p>
+        <span class="price-tag">가변적 비용</span>
+      </div>
+    </div>
+    <p style="color:#78350f;font-size:13px;margin-top:16px;text-align:center">
+      API 키 관리가 부담스럽다면? → <a href="#pro-waitlist" style="color:#6366f1;font-weight:700">Pro 버전 대기자 명단 등록</a> (API 키 없이 월 구독)
+    </p>
+  </div>
+</section>
+
 <section class="section problem">
   <div class="container">
     <h2 class="section-title">왜 JWAY Paperclip인가?</h2>
@@ -246,10 +292,10 @@ footer a:hover{color:#6366f1}
   </div>
 </section>
 
-<section class="section" id="pricing">
+<section class="section pricing" id="pricing">
   <div class="container">
     <h2 class="section-title">가격</h2>
-    <p class="section-sub">본인 Anthropic API 키로 직접 사용하니 매우 저렴합니다</p>
+    <p class="section-sub">소프트웨어는 저렴하게, API 비용은 투명하게 분리</p>
     <div class="pricing-grid">
       <div class="price">
         <h3>오픈소스</h3>
@@ -257,25 +303,32 @@ footer a:hover{color:#6366f1}
         <p>개인 프로젝트 / 소규모 팀</p>
         <ul>
           <li>모든 기능 무제한 사용</li>
-          <li>본인 API 키 사용</li>
-          <li>데이터는 브라우저에 저장</li>
-          <li>MIT 라이선스</li>
-          <li>GitHub에서 직접 설치</li>
+          <li>MIT 라이선스, GitHub 공개</li>
+          <li>데이터는 브라우저에만 저장</li>
+          <li>서버 필요 없음, 설치 불필요</li>
         </ul>
+        <div style="padding:10px;background:#fef3c7;border-radius:6px;margin:12px 0;font-size:12px;color:#92400e;text-align:left">
+          ⚠️ <strong>본인 Anthropic API 키 필요</strong><br/>
+          실행 시 API 비용 본인 부담 (월 $10~20)
+        </div>
         <a href="app.html" class="cta secondary">무료 시작</a>
       </div>
       <div class="price featured">
-        <span class="tag">BEST</span>
+        <span class="tag">BEST VALUE</span>
         <h3>팀 템플릿 팩</h3>
-        <div class="amount">₩19,000<small>/1회</small></div>
-        <p>검증된 팀 + 이슈 + 목표</p>
+        <div class="amount">₩19,000<small>/1회 구매</small></div>
+        <p>검증된 팀 구성 세트</p>
         <ul>
           <li>스타트업 MVP 팀 (6인)</li>
           <li>이커머스 그로스 팀 (5인)</li>
           <li>콘텐츠 크리에이터 팀 (4인)</li>
+          <li>검증된 프롬프트 + 이슈 + 목표</li>
           <li>JSON import 한 번에 완성</li>
-          <li>커스텀 프롬프트 최적화</li>
         </ul>
+        <div style="padding:10px;background:#fef3c7;border-radius:6px;margin:12px 0;font-size:12px;color:#92400e;text-align:left">
+          ⚠️ <strong>설정 파일만 제공 (실행 아님)</strong><br/>
+          실행 시 본인 API 키 필요, API 비용 별도
+        </div>
         <a href="https://github.com/JaeWoo0317/jway-paperclip/tree/main/templates" class="cta">템플릿 보기</a>
       </div>
       <div class="price">
@@ -289,18 +342,79 @@ footer a:hover{color:#6366f1}
           <li>결과물 리뷰 및 개선</li>
           <li>1주일 이메일 지원</li>
         </ul>
+        <div style="padding:10px;background:#d1fae5;border-radius:6px;margin:12px 0;font-size:12px;color:#065f46;text-align:left">
+          ✅ <strong>이 세션은 저희 API 크레딧 사용</strong><br/>
+          첫 실행 비용 포함, 추가 비용 없음
+        </div>
         <a href="mailto:contact@example.com" class="cta secondary">문의하기</a>
       </div>
     </div>
   </div>
 </section>
 
+<section class="section" id="pro-waitlist" style="background:linear-gradient(135deg,#f0f4ff 0%,#eef2ff 100%);border-top:1px solid #e0e7ff;border-bottom:1px solid #e0e7ff">
+  <div class="container" style="max-width:680px;text-align:center">
+    <span style="display:inline-block;padding:6px 14px;background:#6366f1;color:white;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:0.5px;margin-bottom:16px">🚀 COMING SOON</span>
+    <h2 class="section-title" style="margin-bottom:12px">Pro 버전 — API 키 없이 바로 시작</h2>
+    <p class="section-sub" style="margin-bottom:24px">
+      API 키 관리가 부담스러우신가요? 저희가 대신 관리합니다.<br/>
+      <strong>월 ₩39,000으로 협업 50회 포함</strong>, 초과 시 알림으로 중단.
+    </p>
+    <div style="background:white;padding:24px;border-radius:12px;box-shadow:0 4px 20px rgba(99,102,241,0.1);text-align:left;max-width:520px;margin:0 auto">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+        <div>
+          <div style="font-size:13px;color:#6b7280;margin-bottom:4px">JWAY Paperclip <strong style="color:#6366f1">Pro</strong></div>
+          <div style="font-size:32px;font-weight:800">₩39,000<span style="font-size:14px;color:#6b7280;font-weight:400">/월</span></div>
+        </div>
+        <span style="padding:4px 10px;background:#fef3c7;color:#92400e;border-radius:6px;font-size:11px;font-weight:700">대기자 모집 중</span>
+      </div>
+      <ul style="list-style:none;padding:0;margin:16px 0;color:#374151;font-size:14px">
+        <li style="padding:6px 0;border-bottom:1px solid #f3f4f6">✅ API 키 관리 불필요</li>
+        <li style="padding:6px 0;border-bottom:1px solid #f3f4f6">✅ 월 50회 협업 Heartbeat 포함</li>
+        <li style="padding:6px 0;border-bottom:1px solid #f3f4f6">✅ 모든 팀 템플릿 무료 제공</li>
+        <li style="padding:6px 0;border-bottom:1px solid #f3f4f6">✅ 클라우드 저장 (여러 기기 동기화)</li>
+        <li style="padding:6px 0">✅ 우선 기술 지원</li>
+      </ul>
+      <form onsubmit="handleWaitlist(event)" style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+        <input type="email" id="waitlist-email" placeholder="이메일 입력" required style="flex:1;min-width:200px;padding:12px 16px;border:1px solid #d1d5db;border-radius:8px;font-size:14px">
+        <button type="submit" style="padding:12px 24px;background:#6366f1;color:white;border:none;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer">📮 대기자 등록</button>
+      </form>
+      <p style="margin-top:12px;font-size:11px;color:#6b7280;text-align:center">
+        100명 이상 등록 시 개발 시작 · 얼리버드 50% 할인 혜택
+      </p>
+    </div>
+  </div>
+</section>
+<script>
+function handleWaitlist(e){
+  e.preventDefault();
+  var email = document.getElementById('waitlist-email').value;
+  // localStorage에 저장 (백엔드 없이 기초 수집)
+  var list = JSON.parse(localStorage.getItem('pro-waitlist') || '[]');
+  if (list.indexOf(email) === -1) list.push(email);
+  localStorage.setItem('pro-waitlist', JSON.stringify(list));
+  alert('✅ 등록되었습니다!\n\n이메일: '+email+'\n\n100명이 모이면 Pro 버전 개발을 시작하고 이메일로 알려드립니다.\n얼리버드 50% 할인 혜택도 적용됩니다.');
+  e.target.reset();
+}
+</script>
+
 <section class="section">
   <div class="container" style="max-width:760px">
     <h2 class="section-title">자주 묻는 질문</h2>
+    <details class="faq-item" open>
+      <summary class="faq-q">누가 API 비용을 부담하나요?</summary>
+      <div class="faq-a">
+        <strong>현재는 100% 사용자 본인 부담입니다 (BYOK: Bring Your Own Key).</strong><br/><br/>
+        ✔ <strong>오픈소스 앱 (무료)</strong>: 본인 Anthropic API 키로 직접 실행. 월 $10~20 예상.<br/>
+        ✔ <strong>팀 템플릿 (₩19,000)</strong>: 설정 파일만 제공. 실행 시 본인 API 키 필요, API 비용 별도 부담.<br/>
+        ✔ <strong>1:1 컨설팅 (₩150,000)</strong>: 컨설팅 세션 중에는 저희 API 크레딧으로 실행 (포함 가격).<br/>
+        ✔ <strong>Pro 버전 (곧 출시)</strong>: 월 ₩39,000에 저희가 API 비용 포함하여 제공 예정 (월 50회 포함).<br/><br/>
+        이 구조 덕분에 소프트웨어 자체는 저렴하게 판매할 수 있고, 사용자는 실제 사용량만큼만 AI 비용을 냅니다.
+      </div>
+    </details>
     <details class="faq-item">
       <summary class="faq-q">Anthropic API 키는 어떻게 받나요?</summary>
-      <div class="faq-a">console.anthropic.com에서 가입 후 API Keys 메뉴에서 생성하시면 됩니다. 처음 가입 시 일정 크레딧을 무료로 받을 수 있고, 이후 사용량에 따라 과금됩니다.</div>
+      <div class="faq-a">console.anthropic.com에서 가입 후 API Keys 메뉴에서 생성하시면 됩니다. 처음 가입 시 일정 크레딧을 무료로 받을 수 있고, 이후 사용량에 따라 과금됩니다. API 키는 브라우저에만 저장되며 저희 서버로 전송되지 않습니다.</div>
     </details>
     <details class="faq-item">
       <summary class="faq-q">1회 실행에 비용이 얼마나 나오나요?</summary>
