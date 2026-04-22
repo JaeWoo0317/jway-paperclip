@@ -29,7 +29,7 @@
 ```
 Name: 스타트업 MVP 팀 템플릿 (6인)
 URL: startup-mvp-team
-Price: $15 USD (또는 ₩19,000)
+Price: $7.99 USD (또는 ₩9,900)
 ```
 
 **Description:**
